@@ -1,0 +1,54 @@
+[package]
+name = "gkreco"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rand = "0.8.5"
+serde = { version = "=1.0", default-features = false, features = ["derive"] }
+serde_json = { version = "1.0", default-features = false }
+itertools = "0.11"
+prettytable = "0.10.0"
+gkr = { git = "https://github.com/han0110/gkr" }
+rayon = "1.8.0"
+
+[dev-dependencies]
+gkr = { git = "https://github.com/han0110/gkr", features = ["dev"] }
+criterion = "0.5.1"
+goldilocks = { git = "https://github.com/han0110/goldilocks", branch = "feature/qe_op_b" }
+halo2_curves = { version = "0.6.0", package = "halo2curves" }
+
+[features]
+bench = []
+
+[profile.dev]
+opt-level = 3
+debug = 2              # change to 0 or 2 for more or less debug info
+overflow-checks = true
+incremental = true
+
+# Local "release" mode, more optimized than dev but faster to compile than release
+[profile.local]
+inherits = "dev"
+opt-level = 3
+# Set this to 1 or 2 to get more useful backtraces
+debug = 1
+debug-assertions = true
+panic = 'unwind'
+# better recompile times
+incremental = true
+lto = "thin"
+codegen-units = 16
+
+[profile.release]
+opt-level = 3
+debug = false
+debug-assertions = false
+lto = "fat"
+# `codegen-units = 1` can lead to WORSE performance - always bench to find best profile for your machine!
+codegen-units = 1
+panic = "abort"
+incremental = false
+
+[patch."https://github.com/han0110/gkr"]
+gkr = { path = "../examples/gkr/gkr" }
