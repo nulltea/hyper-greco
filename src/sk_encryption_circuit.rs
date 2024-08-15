@@ -17,7 +17,7 @@ use gkr::{
         chain, izip, Itertools,
     },
 };
-use rayon::iter::ParallelIterator;
+use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use serde::Deserialize;
 
 /// `BfvSkEncryptionCircuit` is a circuit that checks the correct formation of a ciphertext resulting from BFV secret key encryption
@@ -42,16 +42,17 @@ pub struct BfvSkEncryptArgs {
     ct0is: Vec<Vec<String>>,
 }
 
-pub struct BfvBlockInput {
-    s: NodeId,
-    ai: NodeId,
+pub struct BfvEncrypt {
+    block: BfvEncryptBlock,
 }
 
-pub struct BfvEncryptBlock {
-    num_reps: usize,
-}
+impl BfvEncrypt {
+    pub fn new(num_reps: usize) -> Self {
+        Self {
+            block: BfvEncryptBlock { num_reps },
+        }
+    }
 
-impl BfvEncryptBlock {
     pub const LOG2_POLY_SIZE: usize = 10;
     // pub const fn num_bits(&self) -> usize {
     //     self.num_bits
@@ -83,67 +84,25 @@ impl BfvEncryptBlock {
     //     BfvBlockInput { s, ai }
     // }
 
-    pub fn configure<F: PrimeField, E: ExtensionField<F>>(&self, circuit: &mut Circuit<F, E>) {
-        // single block
-
+    pub fn configure<F: PrimeField, E: ExtensionField<F>>(
+        &self,
+        circuit: &mut Circuit<F, E>,
+    ) -> NodeId {
         let log2_size = self.log2_size();
 
         let s = circuit.insert(InputNode::new(log2_size, 1));
-        let ai = circuit.insert(InputNode::new(log2_size, 1));
         let e = circuit.insert(InputNode::new(log2_size, 1));
         let k1 = circuit.insert(InputNode::new(log2_size, 1));
-        let r1i = circuit.insert(InputNode::new(log2_size, 1));
-        let r2i_cyclo = circuit.insert(InputNode::new(log2_size, 1));
-        // let cyclo = circuit.insert(InputNode::new(log2_size, 1));
 
-        let s_eval = circuit.insert(FftNode::forward(log2_size));
-        let ai_eval = circuit.insert(FftNode::forward(log2_size));
-        let mul = {
-            let gates = vec![VanillaGate::mul((0, 0), (1, 0))];
-            circuit.insert(VanillaNode::new(2, 0, gates, 1 << log2_size))
-        }; // why this works with log2_sub_input_size = 0 and num reps = 2^log2_input_size
+        // connect!(circuit {
+        //     s_eval <- s;
+        //     ai_eval <- ai;
+        //     mul <- s_eval, ai_eval;
+        //     sai0 <- mul;
+        //     sum <- sai0, e, k1, r1i, r2i_cyclo;
+        // });
 
-        let sai0 = circuit.insert(FftNode::inverse(log2_size));
-
-        // let mul_cyclo = {
-        //     let gates = vec![VanillaGate::mul((0, 0), (1, 0))];
-        //     circuit.insert(VanillaNode::new(2, 0, gates, 1 << log2_size))
-        // };
-
-        let sum = {
-            let gates = vec![VanillaGate::new(
-                None,
-                vec![
-                    (None, (0, 0)),
-                    (None, (1, 0)),
-                    (Some(F::from_str_vartime(K0IS[0]).unwrap()), (2, 0)),
-                    (Some(F::from_str_vartime(QIS[0]).unwrap()), (3, 0)),
-                    (None, (4, 0)),
-                ],
-                vec![],
-            )];
-            circuit.insert(VanillaNode::new(5, 0, gates, 1 << log2_size))
-        };
-
-        // let sum = {
-        //     let gates = vec![
-        //         VanillaGate::new(None, vec![(None, (0, 0)), (None, (1, 0)), (Some(F::from_str_vartime(K0IS[0]).unwrap()), (2, 0)),  /*(Some(F::from_str_vartime(QIS[0]).unwrap()), (3, 0))*/], vec![]),
-        //     ];
-        //     circuit.insert(VanillaNode::new(3, 0, gates, 1 << log2_size))
-        // };
-
-        // let sum = {
-        //     let gates = vec![VanillaGate::sum(vec![(0, 0), (1, 0)])];
-        //     circuit.insert(VanillaNode::new(2, 1, gates, 1 << log2_size))
-        // };
-
-        connect!(circuit {
-            s_eval <- s;
-            ai_eval <- ai;
-            mul <- s_eval, ai_eval;
-            sai0 <- mul;
-            sum <- sai0, e, k1, r1i, r2i_cyclo;
-        });
+        self.block.configure(circuit, s, e, k1)
     }
 
     pub fn gen_values<F: PrimeField, E: ExtensionField<F>>(
@@ -181,6 +140,8 @@ impl BfvEncryptBlock {
             ais.push(ai);
 
             let ct0i = Poly::<F>::new_shifted(args.ct0is[z].clone(), 1 << log2_size);
+            let mut ct0i = ct0i.as_ref()[1..].to_vec();
+            ct0i.push(F::ZERO);
             ct0is.push(ct0i);
         }
 
@@ -194,7 +155,6 @@ impl BfvEncryptBlock {
 
         let ai0_eval = {
             let mut buf = ais[0].as_ref().to_vec();
-            // buf.resize(1 << (log2_size + 1), F::ZERO);
             radix2_fft(&mut buf, omega);
             buf
         };
@@ -223,7 +183,6 @@ impl BfvEncryptBlock {
             result
         };
 
-
         // let ct0i_check = sai0_poly
         //     .iter()
         //     .zip(e.as_ref().iter())
@@ -235,33 +194,99 @@ impl BfvEncryptBlock {
         //     })
         //     .collect_vec();
 
-        
-        let mut ct0i = ct0is[0].as_ref()[1..].to_vec();
-        ct0i.push(F::ZERO);
-
         chain_par![
-            [
-                s,
-                ais[0].clone(),
-                e,
-                k1,
-                r1is[0].clone(),
-            ]
-            .map(|p| p.as_ref().to_vec()),
+            [s, e, k1].map(|p| p.as_ref().to_vec()),
+            ais.par_iter().take(self.block.num_reps).map(|ai| ai.as_ref().to_vec()),
+            r1is.par_iter().take(self.block.num_reps).map(|ai| ai.as_ref().to_vec()),
             [r2i_cyclo],
             [s_eval, ai0_eval],
             [sai0],
             [sai0_poly],
-            // [k1_k01],
-            [ct0i],
+            ct0is.into_par_iter().take(self.block.num_reps),
         ]
         .map(box_dense_poly)
         .collect()
     }
 }
+pub struct BfvEncryptBlock {
+    num_reps: usize,
+}
+
+impl BfvEncryptBlock {
+    pub const LOG2_POLY_SIZE: usize = 10;
+    // pub const fn num_bits(&self) -> usize {
+    //     self.num_bits
+    // }
+
+    // pub const fn rate(&self) -> usize {
+    //     self.rate
+    // }
+
+    // pub const fn num_reps(&self) -> usize {
+    //     self.perm.num_reps()
+    // }
+
+    // pub const fn log2_reps(&self) -> usize {
+    //     self.perm.log2_reps()
+    // }
+
+    pub const fn log2_size(&self) -> usize {
+        // self.perm.log2_size()
+        Self::LOG2_POLY_SIZE + 1
+    }
+
+    // single block
+    pub fn configure<F: PrimeField, E: ExtensionField<F>>(
+        &self,
+        circuit: &mut Circuit<F, E>,
+        s: NodeId,
+        e: NodeId,
+        k1: NodeId,
+    ) -> NodeId {
+        let log2_size = self.log2_size();
+
+        let ai = circuit.insert(InputNode::new(log2_size, self.num_reps));
+        let r1i = circuit.insert(InputNode::new(log2_size, self.num_reps));
+        let r2i_cyclo = circuit.insert(InputNode::new(log2_size, self.num_reps));
+
+        let s_eval = circuit.insert(FftNode::forward(log2_size));
+        let ai_eval = circuit.insert(FftNode::forward(log2_size));
+        let mul = {
+            let gates = vec![VanillaGate::mul((0, 0), (1, 0))];
+            circuit.insert(VanillaNode::new(2, 0, gates, 1 << log2_size))
+        }; // why this works with log2_sub_input_size = 0 and num reps = 2^log2_input_size
+
+        let sai0 = circuit.insert(FftNode::inverse(log2_size));
+
+        let sum = {
+            let gates = vec![VanillaGate::new(
+                None,
+                vec![
+                    (None, (0, 0)),
+                    (None, (1, 0)),
+                    (Some(F::from_str_vartime(K0IS[0]).unwrap()), (2, 0)),
+                    (Some(F::from_str_vartime(QIS[0]).unwrap()), (3, 0)),
+                    (None, (4, 0)),
+                ],
+                vec![],
+            )];
+            circuit.insert(VanillaNode::new(5, 0, gates, 1 << log2_size))
+        };
+
+        connect!(circuit {
+            s_eval <- s;
+            ai_eval <- ai;
+            mul <- s_eval, ai_eval;
+            sai0 <- mul;
+            sum <- sai0, e, k1, r1i, r2i_cyclo;
+        });
+
+        sum
+    }
+}
 
 pub fn bfv_encrypt_circuit<F: PrimeField + From<u64>, E: ExtensionField<F>>(
-    bfv: BfvEncryptBlock,
+    bfv: BfvEncrypt,
     args: BfvSkEncryptArgs,
 ) -> (Circuit<F, E>, Vec<BoxMultilinearPoly<'static, F, E>>) {
     let circuit = {
@@ -292,12 +317,8 @@ pub fn radix2_ifft<F: PrimeField>(buf: &mut [F], omega: F) {
 #[cfg(test)]
 mod test {
     use super::*;
-    use gkr::{
-        dev::run_gkr_with_values,
-        util::dev::{assert_polys_eq, seeded_std_rng},
-    };
+    use gkr::{dev::run_gkr_with_values, util::dev::seeded_std_rng};
     use goldilocks::{Goldilocks, GoldilocksExt2};
-    use halo2_curves::bn256;
     use std::{fs::File, io::Read};
 
     #[test]
@@ -309,7 +330,7 @@ mod test {
         let mut file = File::open(file_path).unwrap();
         let mut data = String::new();
         file.read_to_string(&mut data).unwrap();
-        let bfv = BfvEncryptBlock { num_reps: 1 };
+        let bfv = BfvEncrypt::new(2);
         let args = serde_json::from_str::<BfvSkEncryptArgs>(&data).unwrap();
 
         let (circuit, values) = bfv_encrypt_circuit::<Goldilocks, GoldilocksExt2>(bfv, args);
