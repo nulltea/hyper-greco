@@ -46,7 +46,7 @@ def main(args):
     k1.reduce_coefficients_by_modulus(t)
 
     # `p` is the modulus of the prime field of the circuit
-    p = 21888242871839275222246405745257275088548364400416034343698204186575808495617
+    p = 18446744069414584321
 
     # `r2is` are the polynomials r2i for each i-th CRT basis.
     r2is = []
@@ -74,40 +74,13 @@ def main(args):
     for i, cti in enumerate(ctis):
 
         ct0i = cti[0]
-        ai = cti[1].scalar_mul(-1)
+        ai = cti[1].scalar_mul(-1)  
 
-        e_assigned = assign_to_circuit(e, p)    
-
-
-        sai = ai * s;
-        sai_assigned = assign_to_circuit(sai, p)    
-        print("sai[:10 ]", [hex(n) for n in sai_assigned.coefficients[:10]])
-        print("sai[-10:]", [hex(n) for n in sai_assigned.coefficients[-10:]])
         k0i = pow(-t, -1, qis[i])
-
-        k1k0i = k1.scalar_mul(k0i)
-        k1k0i_assigned = assign_to_circuit(k1k0i, p)
-        # print("k1k0i[:10 ]", [hex(n) for n in k1k0i_assigned.coefficients[:10]])
-        # print("k1k0i[-10:]", [hex(n) for n in k1k0i_assigned.coefficients[-10:]])
 
         # k0i = -t^{-1} namely the multiplicative inverse of t modulo qi
         ct0i_hat = ai * s + e + k1.scalar_mul(k0i)
         assert(len(ct0i_hat.coefficients) - 1 == 2 * n - 2)
-
-        # ct0i_hat_test = sai.__mul__(e)
-        
-        print("-----------------")
-        print("sai/len ", len(sai.coefficients), "e/len ", len(e.coefficients))
-        print("e", [hex(n) for n in e.coefficients[-10:]])
-        print("e_ass", [hex(n) for n in e_assigned.coefficients[-10:]])
-        print("sai", [hex(n) for n in sai.coefficients[-10:]])
-        ct0i_hat_assigned = assign_to_circuit((sai + e), p)
-        print("ct_hat[:10 ]", [hex(n) for n in ct0i_hat_assigned.coefficients[:10]])
-        print("ct_hat[-10:]", [hex(n) for n in ct0i_hat_assigned.coefficients[-10:]])
-
-        print("-----------------")
-        # return
-        # print("ct_hat[-10:]", [hex(n) for n in ct0i_hat_test.coefficients[-10:]])
 
         # ai * s + e + k0i * k1 = ct0i mod Rqi
         # assert that ct0i_hat = ct0i mod Rqi
@@ -128,17 +101,13 @@ def main(args):
         # assert that the remainder is zero
         assert rem == []
         r2i = Polynomial(quotient)
-        # r2i_assigned = assign_to_circuit(r2i, p)
-        # print("r2i[:10 ]", [hex(n) for n in r2i.coefficients[:10]])
         # assert that the degree of r2i is equal to n - 2
         assert len(r2i.coefficients) - 1 == n - 2
 
         # Assert that ct0i - ct0i_hat = r2i * cyclo mod Zqi
         lhs = ct0i + ct0i_hat.scalar_mul(-1)
         rhs = r2i * cyclo
-        rhs_assigned = assign_to_circuit(rhs, p)
-        # print("r2i * cyclo[:10 ]", [hex(n) for n in rhs_assigned.coefficients[:10]])
-        # print("r2i * cyclo[-10:]", [hex(n) for n in rhs_assigned.coefficients[n-2:n+2]])
+
         # reduce the coefficients of lhs by the modulus qi
         lhs.reduce_coefficients_by_modulus(qis[i])
         assert lhs == rhs 
@@ -155,28 +124,7 @@ def main(args):
 
         # Assert that ct0i = ct0i_hat + r1i * qi + r2i * cyclo mod Zp
         lhs = ct0i
-        print("ct0i_hat len", len(ct0i_hat.coefficients))
-        print("r1i len", len(r1i.coefficients))
-       
-        r1i_assigned = assign_to_circuit(r1i, p)
-        print("r1i[:10 ]", [hex(n) for n in r1i_assigned.coefficients[:10]])
-        r1iqis = assign_to_circuit(r1i.scalar_mul(qis[i]), p)
-        print("r1iqis[:10 ]", [hex(n) for n in r1iqis.coefficients[:10]])
-        # print("r1iqis[-10:]", [hex(n) for n in r1iqis.coefficients[-10:]])
-        print("-----------------")
-       
         rhs = ct0i_hat + (r1i.scalar_mul(qis[i])) + (r2i * cyclo)
-
-        rhs_assigned = assign_to_circuit(rhs, p)
-        print("rhs[:10 ]", [hex(n) for n in rhs_assigned.coefficients[:10]])
-        print("rhs[-10:]", [hex(n) for n in rhs_assigned.coefficients[-10:]])
-        
-        print("-----------------")
-        lhs_assigned = assign_to_circuit(Polynomial([0] * n + lhs.coefficients), p)
-
-        print("lhs len", len(lhs.coefficients))
-        print("lhs[:10 ]", [hex(n) for n in lhs_assigned.coefficients[:10]])
-        print("lhs[-10:]", [hex(n) for n in lhs_assigned.coefficients[-10:]])
 
         # remove the leading zeroes from rhs until the length of rhs.coefficients is equal to n
         while len(rhs.coefficients) > n and rhs.coefficients[0] == 0:
@@ -189,8 +137,6 @@ def main(args):
         k0is.append(k0i)
         ct0is.append(ct0i)
         ct0is_hat.append(ct0i_hat)
-
-        print("new -----------------")
 
     # `r1_bounds` are the bounds for the coefficients of r1i for each CRT basis
     r1_bounds = []

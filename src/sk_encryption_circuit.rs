@@ -152,7 +152,6 @@ impl BfvEncryptBlock {
     ) -> Vec<BoxMultilinearPoly<'static, F, E>> {
         let log2_size = self.log2_size();
         println!("log2_size {:?}", log2_size);
-        // let rate = bfv.rate();
 
         let s = Poly::<F>::new_shifted(args.s.clone(), 1 << log2_size);
         let e = Poly::<F>::new_shifted(args.e.clone(), (1 << log2_size) - 1);
@@ -187,9 +186,6 @@ impl BfvEncryptBlock {
 
         let omega = root_of_unity(log2_size);
 
-        // println!("s {:?}", &s.coefficients[..10]);
-        // println!("e {:?}", &e.coefficients[..10]);
-
         let s_eval = {
             let mut buf = s.as_ref().to_vec();
             radix2_fft(&mut buf, omega);
@@ -203,51 +199,22 @@ impl BfvEncryptBlock {
             buf
         };
 
-        // println!("-------------------");
-        // // println!("s_eval[ :10] {:?}", &s_eval[..10]);
-        // println!("s_eval[-10:] {:?}", &s_eval[s_eval.len() - 11..]);
-        // // println!("ai0_eval[ :10] {:?}", &ai0_eval[..10]);
-        // println!("ai0_eval[-10:] {:?}", &ai0_eval[ai0_eval.len() - 11..]);
-
-        // println!("-------------------");
-
         let sai0 = s_eval
             .iter()
             .zip(ai0_eval.iter())
             .map(|(s, ai)| *s * *ai)
             .collect_vec();
 
-        let mut sai0_poly = {
+        let sai0_poly = {
             let mut buf = sai0.clone();
             radix2_ifft(&mut buf, omega);
             buf
         };
 
-        // sai0_poly.pop();
-        // sai0_poly.insert(0, F::ZERO);
-
-        println!("sai0[ :10] {:?}", &sai0_poly[..10]);
-        println!("sai0[-10:] {:?}", &sai0_poly[sai0_poly.len()-11..]);
-        println!("-------------------");
-
-        let cyclo = Poly::<F>::cyclo_padded(log2_size);
-
-        // let r2i_cyclo = {
-        //     let mut coeffs = r2is[0].as_ref().to_vec();
-        //     println!("r2i len {:?}", args.r2is[0].len());
-        //     let lbs = coeffs[N-1..].iter().cloned().collect_vec();
-        //     coeffs.splice(N-1.., lbs);
-        //     coeffs
-        // };
-
         let r2i_cyclo = {
-            // println!("r2i len {:?}", args.r2is[0].len());
-            // println!("r2i*c len {:?}", N + N - 1);
-
             let r2i0 = Poly::<F>::new(args.r2is[0].clone());
             let mut result = vec![F::ZERO; N + N - 1]; // Allocate result vector of size 2N-1
 
-            // Step 1: Add P(x) to result
             for i in 0..args.r2is[0].len() {
                 result[i] += r2i0.coefficients[i]; // Add P(x)
                 result[i + N] += r2i0.coefficients[i]; // Add P(x) * x^N
@@ -256,92 +223,21 @@ impl BfvEncryptBlock {
             result
         };
 
-        // println!("r2i_cyclo[ :10] {:?}", &r2i_cyclo[..10]);
-        // println!("r2i_cyclo[-10:] {:?}", &r2i_cyclo[N-2..N+2]);
 
-        // {
-        //     let mut coeffs = vec![0, 0, 0, 0, 0, 1, 2, 3];
-        //     let lbs = coeffs[..4].iter().cloned().collect_vec();
-        //     coeffs.splice(4-1.., lbs);
-        //     println!("coeffs test {:?}", coeffs);
-        // };
-
-        // println!("r2i_cyclo coeefffs {:?}", &r2i_cyclo[r2i_cyclo.len() - 50..]);
-
-      
-
-
-        let r1iqis = r1is[0]
-            .as_ref()
-            .iter()
-            .map(|r1i| *r1i * qi_constants[0])
-            .collect_vec();
-
-
-        // *sai0 + *e + *k1 * k0i_constants[0] + *r1i * qi_constants[0] + *r2i_cyclo
-        // let k1k0i = k1
-        //     .as_ref()
+        // let ct0i_check = sai0_poly
         //     .iter()
-        //     .map(|k1| *k1 * k0i_constants[0])
+        //     .zip(e.as_ref().iter())
+        //     .zip(k1.as_ref().iter())
+        //     .zip(r1is[0].as_ref().iter())
+        //     .zip(r2i_cyclo.iter())
+        //     .map(|((((sai0, e), k1), r1i), r2i_cyclo)| {
+        //         *sai0 + *e + *k1 * k0i_constants[0] + *r1i * qi_constants[0] + *r2i_cyclo
+        //     })
         //     .collect_vec();
-
-        // println!("k1k0i[ :10] {:?}", &k1k0i[..10]);
-        // println!("k1k0i[-10:] {:?}", &k1k0i[k1k0i.len() - 10..]);
-
-        let ct_hat = sai0_poly
-        .iter()
-        .zip(e.as_ref().iter())
-        .zip(k1.as_ref().iter())
-        .zip(r1is[0].as_ref().iter())
-        .zip(r2i_cyclo.iter())
-        .map(|((((sai0, e), k1), r1i), r2i_cyclo)| {
-            *sai0 + *e
-        })
-        .collect_vec();
-
-        // println!("ct_hat[ :10] {:?}", &ct_hat[..10]);
-        println!("e len {:?}", e.coefficients.len());
-        println!("e[-10:] {:?}", &e.coefficients[e.coefficients.len()-11..]);
-        println!("ct_hat[ :10] {:?}", &ct_hat[..10]);
-        println!("ct_hat[-10:] {:?}", &ct_hat[ct_hat.len()-11..]);
-        println!("-------------------");
-
-
-        println!("r1i[ :10] {:?}", &r1is[0].coefficients[..10]);
-        println!("r1iqis[ :10] {:?}", &r1iqis[..10]);
-        println!("-------------------");
-        // println!("r1iqis[-10:] {:?}", &r1iqis[r1iqis.len() - 10..]);
-
-        let sai0_e = sai0_poly
-            .iter()
-            .zip(e.as_ref().iter())
-            .zip(k1.as_ref().iter())
-            .zip(r1is[0].as_ref().iter())
-            .zip(r2i_cyclo.iter())
-            .map(|((((sai0, e), k1), r1i), r2i_cyclo)| {
-                *sai0 + *e + *k1 * k0i_constants[0] + *r1i * qi_constants[0] + *r2i_cyclo
-            })
-            .collect_vec();
-        //*sai0 + *e + *k1 * k0i_constants[0] + *r1i * qi_constants[0] + *r2i_cyclo
-
-        println!("rhs[ :10] {:?}", &sai0_e[..10]);
-        println!("rhs[-10:] {:?}", &sai0_e[sai0_e.len() - 11..]);
-        println!("-------------------");
-
-        // let k1_k01 = k1.as_ref().iter().map(|k1| *k1 * k01).collect_vec();
-
-        // println!("r1is 0 {:?}", r1is[0].coefficients.len());
-        // println!("r2i_cyclo {:?}", cyclo.coefficients.len());
 
         
         let mut ct0i = ct0is[0].as_ref()[1..].to_vec();
-        println!("ct0i len {:?}", ct0i.len());
         ct0i.push(F::ZERO);
-
-        println!("cti[ :10] {:?}", &ct0i[..10]);
-        println!("cti[-10:] {:?}", &ct0i[ct0i.len() - 11..]);
-
-        // println!("sai0_e coeefffs {:?}", &sai0_e[sai0_e.len() - 100..]);
 
         chain_par![
             [
@@ -416,7 +312,7 @@ mod test {
         let bfv = BfvEncryptBlock { num_reps: 1 };
         let args = serde_json::from_str::<BfvSkEncryptArgs>(&data).unwrap();
 
-        let (circuit, values) = bfv_encrypt_circuit::<bn256::Fr, bn256::Fr>(bfv, args);
+        let (circuit, values) = bfv_encrypt_circuit::<Goldilocks, GoldilocksExt2>(bfv, args);
         // let values = circuit.evaluate(expected_values);
         // assert_polys_eq(&values, &expected_values);
         run_gkr_with_values(&circuit, &values, &mut rng);
