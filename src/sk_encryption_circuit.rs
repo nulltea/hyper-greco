@@ -1,24 +1,27 @@
-use crate::constants::sk_enc_constants_1024_2x55_65537::{
-    E_BOUND, K0IS, K1_BOUND, N, QIS, R1_BOUNDS, R2_BOUNDS, S_BOUND,
-};
+use crate::constants::sk_enc_constants_1024_2x55_65537::{E_BOUND, K0IS, K1_BOUND, N, QIS, R1_BOUNDS, R2_BOUNDS};
 use crate::poly::Poly;
 use gkr::util::arithmetic::radix2_fft;
 use gkr::{
     chain_par,
     circuit::{
         connect,
-        node::{FftNode, InputNode, LogUpNode, Node, VanillaGate, VanillaNode},
+        node::{FftNode, InputNode, LogUpNode, VanillaGate, VanillaNode},
         Circuit, NodeId,
     },
     ff_ext::ff::PrimeField,
     poly::{box_dense_poly, BoxMultilinearPoly},
     util::{
-        arithmetic::{powers, squares, ExtensionField, Field},
-        chain, izip, Itertools,
+        arithmetic::{squares, ExtensionField},
+        izip, Itertools,
     },
 };
-use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
+use rayon::iter::ParallelIterator;
 use serde::Deserialize;
+use std::cmp::{max, min};
+
+const E_BOUND_LEN: usize = (2 * E_BOUND + 1).next_power_of_two().ilog2() as usize;
+const K1_BOUND_LEN: usize = (2 * K1_BOUND + 1).next_power_of_two().ilog2() as usize;
+
 
 /// `BfvSkEncryptionCircuit` is a circuit that checks the correct formation of a ciphertext resulting from BFV secret key encryption
 /// All the polynomials coefficients and scalars are normalized to be in the range `[0, p)` where p is the modulus of the prime field of the circuit
@@ -42,172 +45,6 @@ pub struct BfvSkEncryptArgs {
     ct0is: Vec<Vec<String>>,
 }
 
-pub struct BfvEncrypt {
-    block: BfvEncryptBlock,
-}
-
-impl BfvEncrypt {
-    pub fn new(num_reps: usize) -> Self {
-        Self {
-            block: BfvEncryptBlock { num_reps },
-        }
-    }
-
-    pub const LOG2_POLY_SIZE: usize = 10;
-    // pub const fn num_bits(&self) -> usize {
-    //     self.num_bits
-    // }
-
-    // pub const fn rate(&self) -> usize {
-    //     self.rate
-    // }
-
-    // pub const fn num_reps(&self) -> usize {
-    //     self.perm.num_reps()
-    // }
-
-    // pub const fn log2_reps(&self) -> usize {
-    //     self.perm.log2_reps()
-    // }
-
-    pub const fn log2_size(&self) -> usize {
-        // self.perm.log2_size()
-        Self::LOG2_POLY_SIZE + 1
-    }
-
-    // pub fn alloc_input<F: PrimeField, E: ExtensionField<F>>(
-    //     &self,
-    //     circuit: &mut Circuit<F, E>,
-    // ) -> BfvBlockInput {
-    //     let s = circuit.insert(InputNode::new(Self::LOG2_POLY_SIZE, 1));
-    //     let ai = circuit.insert(InputNode::new(Self::LOG2_POLY_SIZE, 1));
-    //     BfvBlockInput { s, ai }
-    // }
-
-    pub fn configure<F: PrimeField, E: ExtensionField<F>>(
-        &self,
-        circuit: &mut Circuit<F, E>,
-    ) -> NodeId {
-        let log2_size = self.log2_size();
-
-        let s = circuit.insert(InputNode::new(log2_size, 1));
-        let e = circuit.insert(InputNode::new(log2_size, 1));
-        let k1 = circuit.insert(InputNode::new(log2_size, 1));
-
-        // connect!(circuit {
-        //     s_eval <- s;
-        //     ai_eval <- ai;
-        //     mul <- s_eval, ai_eval;
-        //     sai0 <- mul;
-        //     sum <- sai0, e, k1, r1i, r2i_cyclo;
-        // });
-
-        self.block.configure(circuit, s, e, k1)
-    }
-
-    pub fn gen_values<F: PrimeField, E: ExtensionField<F>>(
-        &self,
-        args: BfvSkEncryptArgs,
-    ) -> Vec<BoxMultilinearPoly<'static, F, E>> {
-        let log2_size = self.log2_size();
-        println!("log2_size {:?}", log2_size);
-
-        let s = Poly::<F>::new_shifted(args.s.clone(), 1 << log2_size);
-        let e = Poly::<F>::new_shifted(args.e.clone(), (1 << log2_size) - 1);
-        let k1 = Poly::<F>::new_shifted(args.k1.clone(), (1 << log2_size) - 1);
-
-        let mut r2is = vec![];
-        let mut r1is = vec![];
-        let mut ais = vec![];
-        let mut ct0is = vec![];
-
-        let mut qi_constants = vec![];
-        let mut k0i_constants = vec![];
-
-        for z in 0..args.ct0is.len() {
-            qi_constants.push(F::from_str_vartime(QIS[z]).unwrap());
-            k0i_constants.push(F::from_str_vartime(K0IS[z]).unwrap());
-        }
-
-        for z in 0..args.ct0is.len() {
-            let r2i = Poly::<F>::new_padded(args.r2is[z].clone(), log2_size);
-            r2is.push(r2i);
-
-            let r1i = Poly::<F>::new_padded(args.r1is[z].clone(), log2_size);
-            r1is.push(r1i);
-
-            let ai = Poly::<F>::new_shifted(args.ais[z].clone(), 1 << log2_size);
-            ais.push(ai);
-
-            let ct0i = Poly::<F>::new_shifted(args.ct0is[z].clone(), 1 << log2_size);
-            let mut ct0i = ct0i.as_ref()[1..].to_vec();
-            ct0i.push(F::ZERO);
-            ct0is.push(ct0i);
-        }
-
-        let omega = root_of_unity(log2_size);
-
-        let s_eval = {
-            let mut buf = s.as_ref().to_vec();
-            radix2_fft(&mut buf, omega);
-            buf
-        };
-
-        let ai0_eval = {
-            let mut buf = ais[0].as_ref().to_vec();
-            radix2_fft(&mut buf, omega);
-            buf
-        };
-
-        let sai0 = s_eval
-            .iter()
-            .zip(ai0_eval.iter())
-            .map(|(s, ai)| *s * *ai)
-            .collect_vec();
-
-        let sai0_poly = {
-            let mut buf = sai0.clone();
-            radix2_ifft(&mut buf, omega);
-            buf
-        };
-
-        let r2i_cyclo = {
-            let r2i0 = Poly::<F>::new(args.r2is[0].clone());
-            let mut result = vec![F::ZERO; N + N - 1]; // Allocate result vector of size 2N-1
-
-            for i in 0..args.r2is[0].len() {
-                result[i] += r2i0.coefficients[i]; // Add P(x)
-                result[i + N] += r2i0.coefficients[i]; // Add P(x) * x^N
-            }
-            result.push(F::ZERO);
-            result
-        };
-
-        // let ct0i_check = sai0_poly
-        //     .iter()
-        //     .zip(e.as_ref().iter())
-        //     .zip(k1.as_ref().iter())
-        //     .zip(r1is[0].as_ref().iter())
-        //     .zip(r2i_cyclo.iter())
-        //     .map(|((((sai0, e), k1), r1i), r2i_cyclo)| {
-        //         *sai0 + *e + *k1 * k0i_constants[0] + *r1i * qi_constants[0] + *r2i_cyclo
-        //     })
-        //     .collect_vec();
-
-        chain_par![
-            [s, e, k1].map(|p| p.as_ref().to_vec()),
-            ais.par_iter().take(self.block.num_reps).map(|ai| ai.as_ref().to_vec()),
-            r1is.par_iter().take(self.block.num_reps).map(|ai| ai.as_ref().to_vec()),
-            [r2i_cyclo],
-            [s_eval, ai0_eval],
-            [sai0],
-            [sai0_poly],
-            ct0is.into_par_iter().take(self.block.num_reps),
-        ]
-        .map(box_dense_poly)
-        .collect()
-    }
-}
 pub struct BfvEncryptBlock {
     num_reps: usize,
 }
@@ -235,6 +72,14 @@ impl BfvEncryptBlock {
         Self::LOG2_POLY_SIZE + 1
     }
 
+    pub const fn r2i_bound_len() -> usize {
+        (2 * R2_BOUNDS[0] + 1).next_power_of_two().ilog2() as usize
+    }
+
+    pub fn r1i_bound_len(&self) -> usize {
+        R1_BOUNDS.into_iter().take(self.num_reps).map(|r1_bounds| (2 * r1_bounds + 1).next_power_of_two().ilog2() as usize).max().unwrap()
+    }
+
     // single block
     pub fn configure<F: PrimeField, E: ExtensionField<F>>(
         &self,
@@ -248,40 +93,344 @@ impl BfvEncryptBlock {
         let ai = circuit.insert(InputNode::new(log2_size, self.num_reps));
         let r1i = circuit.insert(InputNode::new(log2_size, self.num_reps));
         let r2i_cyclo = circuit.insert(InputNode::new(log2_size, self.num_reps));
+        
+        let r1i_m = circuit.insert(InputNode::new(self.r1i_bound_len(), 1));
+        let r1i_t = circuit.insert(InputNode::new(self.r1i_bound_len(), 1));
+        let r1i_range = circuit.insert(LogUpNode::new(self.r1i_bound_len(), log2_size + self.num_reps - 1, 1));
 
-        let s_eval = circuit.insert(FftNode::forward(log2_size));
-        let ai_eval = circuit.insert(FftNode::forward(log2_size));
-        let mul = {
-            let gates = vec![VanillaGate::mul((0, 0), (1, 0))];
-            circuit.insert(VanillaNode::new(2, 0, gates, 1 << log2_size))
-        }; // why this works with log2_sub_input_size = 0 and num reps = 2^log2_input_size
+        let s_eval = circuit.insert(FftNode::forward(log2_size + self.num_reps - 1));
+        let ai_eval = circuit.insert(FftNode::forward(log2_size + self.num_reps - 1));
+        let sai_eval = {
+            let gates = (0..1usize << log2_size)
+                .map(|i| VanillaGate::mul((0, i), (1, i)))
+                .collect_vec();
+            circuit.insert(VanillaNode::new(2, log2_size, gates, self.num_reps))
+        };
 
-        let sai0 = circuit.insert(FftNode::inverse(log2_size));
+        let sai = circuit.insert(FftNode::inverse(log2_size + self.num_reps - 1));
 
         let sum = {
-            let gates = vec![VanillaGate::new(
-                None,
-                vec![
-                    (None, (0, 0)),
-                    (None, (1, 0)),
-                    (Some(F::from_str_vartime(K0IS[0]).unwrap()), (2, 0)),
-                    (Some(F::from_str_vartime(QIS[0]).unwrap()), (3, 0)),
-                    (None, (4, 0)),
-                ],
-                vec![],
-            )];
-            circuit.insert(VanillaNode::new(5, 0, gates, 1 << log2_size))
+            let gates = (0..1usize << log2_size)
+                .map(|i| {
+                    VanillaGate::new(
+                        None,
+                        vec![
+                            (None, (0, i)),
+                            (None, (1, i)),
+                            (Some(F::from_str_vartime(K0IS[0]).unwrap()), (2, i)),
+                            (Some(F::from_str_vartime(QIS[0]).unwrap()), (3, i)),
+                            (None, (4, i)),
+                        ],
+                        vec![],
+                    )
+                })
+                .collect();
+            circuit.insert(VanillaNode::new(5, log2_size, gates, self.num_reps))
         };
 
         connect!(circuit {
+            r1i_range <- r1i_m, r1i_t, r1i;
             s_eval <- s;
             ai_eval <- ai;
-            mul <- s_eval, ai_eval;
-            sai0 <- mul;
-            sum <- sai0, e, k1, r1i, r2i_cyclo;
+            sai_eval <- s_eval, ai_eval;
+            sai <- sai_eval;
+            sum <- sai, e, k1, r1i, r2i_cyclo;
         });
 
-        sum
+        sai_eval
+    }
+}
+
+pub struct BfvEncrypt {
+    block: BfvEncryptBlock,
+}
+
+impl BfvEncrypt {
+    pub fn new(num_reps: usize) -> Self {
+        Self {
+            block: BfvEncryptBlock { num_reps },
+        }
+    }
+
+    pub const LOG2_POLY_SIZE: usize = 10;
+
+    pub const fn log2_size(&self) -> usize {
+        // self.perm.log2_size()
+        Self::LOG2_POLY_SIZE + 1
+    }
+
+    pub fn configure<F: PrimeField, E: ExtensionField<F>>(
+        &self,
+        circuit: &mut Circuit<F, E>,
+    ) -> NodeId {
+        let log2_size = self.log2_size();
+
+        let s = circuit.insert(InputNode::new(log2_size, self.block.num_reps));
+        let e = circuit.insert(InputNode::new(log2_size, self.block.num_reps));
+        let k1 = circuit.insert(InputNode::new(log2_size, self.block.num_reps));
+
+        let s_m = circuit.insert(InputNode::new(2, 1));
+        let s_t = circuit.insert(InputNode::new(2, 1));
+        let s_range = circuit.insert(LogUpNode::new(2, log2_size + self.block.num_reps - 1, 1));
+
+        let e_m = circuit.insert(InputNode::new(E_BOUND_LEN, 1));
+        let e_t = circuit.insert(InputNode::new(E_BOUND_LEN, 1));
+        let e_range = circuit.insert(LogUpNode::new(E_BOUND_LEN, log2_size + self.block.num_reps - 1, 1));
+
+        let k1_m = circuit.insert(InputNode::new(K1_BOUND_LEN, 1));
+        let k1_t = circuit.insert(InputNode::new(K1_BOUND_LEN, 1));
+        let k1_range = circuit.insert(LogUpNode::new(K1_BOUND_LEN, log2_size + self.block.num_reps - 1, 1));
+
+        connect!(circuit {
+            s_range <- s_m, s_t, s;
+            e_range <- e_m, e_t, e;
+            k1_range <- k1_m, k1_t, k1;
+        });
+
+        self.block.configure(circuit, s, e, k1)
+    }
+
+    pub fn gen_values<F: PrimeField, E: ExtensionField<F>>(
+        &self,
+        args: BfvSkEncryptArgs,
+    ) -> Vec<BoxMultilinearPoly<'static, F, E>> {
+        let log2_size = self.log2_size();
+        println!("log2_size {:?}", log2_size);
+
+        let s = Poly::<F>::new_padded(args.s.clone(), log2_size);
+        let e = Poly::<F>::new_shifted(args.e.clone(), (1 << log2_size) - 1);
+        let k1 = Poly::<F>::new_shifted(args.k1.clone(), (1 << log2_size) - 1);
+
+        let mut r2is = vec![];
+        let mut r1is = vec![];
+        let mut ais = vec![];
+        let mut ct0is = vec![];
+
+        let mut qi_constants = vec![];
+        let mut k0i_constants = vec![];
+
+        for z in 0..min(args.ct0is.len(), self.block.num_reps) {
+            let r2i = Poly::<F>::new(args.r2is[z].clone());
+            r2is.push(r2i.as_ref().to_vec());
+
+            let r1i = Poly::<F>::new_padded(args.r1is[z].clone(), log2_size);
+            r1is.extend(r1i.as_ref().to_vec());
+
+            let ai = Poly::<F>::new_padded(args.ais[z].clone(), log2_size);
+            ais.extend(ai.as_ref().to_vec());
+
+            let ct0i = Poly::<F>::new_shifted(args.ct0is[z].clone(), 1 << log2_size);
+            let mut ct0i = ct0i.as_ref()[1..].to_vec();
+            ct0i.push(F::ZERO);
+            ct0is.extend(ct0i);
+
+            qi_constants.push(F::from_str_vartime(QIS[z]).unwrap());
+            k0i_constants.push(F::from_str_vartime(K0IS[z]).unwrap());
+        }
+
+        let ss = (0..self.block.num_reps)
+            .flat_map(|_| s.as_ref().to_vec())
+            .collect_vec();
+        let es = (0..self.block.num_reps)
+            .flat_map(|_| e.as_ref().to_vec())
+            .collect_vec();
+        let k1s = (0..self.block.num_reps)
+            .flat_map(|_| k1.as_ref().to_vec())
+            .collect_vec();
+
+        let omega = root_of_unity(log2_size + self.block.num_reps - 1);
+
+        let s_eval = {
+            let mut buf = ss.clone();
+            println!("s_eval size {:?}", buf.len());
+            radix2_fft(&mut buf, omega);
+            buf
+        };
+
+        let ai_eval = {
+            let mut buf = ais.clone();
+            println!("ai_eval size {:?}", buf.len());
+            radix2_fft(&mut buf, omega);
+            buf
+        };
+
+        let sai_eval = izip!(s_eval.iter(), ai_eval.iter())
+            .map(|(s, ai)| *s * *ai)
+            .collect_vec();
+
+        println!("sai_eval size {:?}", sai_eval.len());
+
+        let sai = {
+            let mut buf = sai_eval.clone();
+            radix2_ifft(&mut buf, omega);
+            buf
+        };
+
+        // {
+        //     // let omega = root_of_unity(log2_size);
+
+        //     let ss_evals = (0..self.block.num_reps)
+        //         .map(|_| {
+        //             let mut buf = s.as_ref().to_vec();
+        //             radix2_fft(&mut buf, omega);
+        //             buf
+        //         })
+        //         .collect_vec();
+
+        //     let s_eval_check = ss_evals.iter().flatten().cloned().collect_vec();
+
+        //     assert!(s_eval == s_eval_check, "s_eval not match");
+
+        //     let ais_evals = (0..self.block.num_reps)
+        //         .map(|z| {
+        //             let ai = Poly::<F>::new_shifted(args.ais[z].clone(), 1 << log2_size);
+        //             let mut buf = ai.as_ref().to_vec();
+        //             radix2_fft(&mut buf, omega);
+        //             buf
+        //         })
+        //         .collect_vec();
+
+        //     let sai_evals = izip!(ss_evals.iter(), ais_evals.iter())
+        //         .map(|(s, ai)| {
+        //             izip!(s.iter(), ai.iter())
+        //                 .map(|(s, ai)| *s * *ai)
+        //                 .collect_vec()
+        //         })
+        //         .collect_vec();
+
+        //     let sai_check = sai_evals
+        //         .iter()
+        //         .flat_map(|sai_eval| {
+        //             let mut buf = sai_eval.clone();
+        //             radix2_ifft(&mut buf, omega);
+        //             buf
+        //         })
+        //         .collect_vec();
+
+        //     assert!(sai == sai_check, "not match");
+        // }
+
+        // println!("sai0[ :10] {:?}", &sai[..10]);
+        // println!("sai0[-10:] {:?}", &sai[sai.len() - 11..]);
+        // println!("-------------------");
+
+        // println!("sai {:?}", sai.len());
+
+        // println!("sai size {:?}", sai.len());
+
+        let r2is_cyclo = r2is
+            .iter()
+            .take(self.block.num_reps)
+            .flat_map(|r2i| {
+                let mut result = vec![F::ZERO; N + N - 1]; // Allocate result vector of size 2N-1
+
+                for i in 0..r2i.len() {
+                    result[i] += r2i[i]; // Add P(x)
+                    result[i + N] += r2i[i]; // Add P(x) * x^N
+                }
+                result.push(F::ZERO);
+                result
+            })
+            .collect_vec();
+
+        let ct0i_check = sai
+            .iter()
+            .zip(es.iter())
+            .zip(k1s.iter())
+            .zip(r1is.iter())
+            .zip(r2is_cyclo.iter())
+            .map(|((((sai0, e), k1), r1i), r2i_cyclo)| {
+                *sai0 + *e + *k1 * k0i_constants[0] + *r1i * qi_constants[0] + *r2i_cyclo
+            })
+            .collect_vec();
+
+        let (s_t, s_m) = {
+            let t = [F::ZERO, F::ONE, F::ZERO - F::ONE, F::ZERO];
+            let mut m = [F::ZERO; 4];
+            ss.iter().for_each(|s| {
+                if let Some(i) = t.iter().position(|e| e == s) {
+                    m[i] += F::ONE;
+                }
+            });
+
+            (t.to_vec(), m.to_vec())
+        };
+
+        let (e_t, e_m) = {
+            let mut t = (0..=E_BOUND)
+                .flat_map(|b| [F::ZERO - F::from(b), F::from(b)])
+                .collect_vec();
+            t.resize(1 << E_BOUND_LEN, F::ZERO);
+            let mut m = vec![F::ZERO; 1 << E_BOUND_LEN];
+            es.iter().for_each(|s| {
+                if let Some(i) = t.iter().position(|e| e == s) {
+                    m[i] += F::ONE; // TODO: how do we infore multiplicities in the GKR circuit?
+                }
+            });
+
+            (t, m)
+        };
+
+        let (k1_t, k1_m) = {
+            let mut t = (0..=K1_BOUND)
+                .flat_map(|b| [F::ZERO - F::from(b), F::from(b)])
+                .collect_vec();
+            t.resize(1 << K1_BOUND_LEN, F::ZERO);
+            let mut m = vec![F::ZERO; 1 << K1_BOUND_LEN];
+            k1s.iter().for_each(|s| {
+                if let Some(i) = t.iter().position(|e| e == s) {
+                    m[i] += F::ONE;
+                }
+            });
+
+            (t, m)
+        };
+
+        // let (r2i_t, r2i_m) = {
+        //     let mut t = (0..=max(R2_BOUNDS[0], R2_BOUNDS[1]))
+        //         .flat_map(|b| [F::ZERO - F::from(b), F::from(b)])
+        //         .collect_vec();
+        //     t.resize(1 << R2I_BOUND_LEN, F::ZERO);
+        //     let mut m = vec![F::ZERO; 1 << R2I_BOUND_LEN];
+        //     r2is.iter().for_each(|s| {
+        //         if let Some(i) = t.iter().position(|e| e == s) {
+        //             m[i] += F::ONE;
+        //         }
+        //     });
+
+        //     (t, m)
+        // };
+
+        // this is not ideal, need to have a separate range for each parallel sub circuit
+        let (r1i_t, r1i_m) = {
+            let mut t = (0..=R1_BOUNDS.into_iter().max().unwrap())
+                .flat_map(|b| [F::ZERO - F::from(b), F::from(b)])
+                .collect_vec();
+            t.resize(1 << self.block.r1i_bound_len(), F::ZERO);
+            let mut m = vec![F::ZERO; 1 << self.block.r1i_bound_len()];
+            r1is.iter().for_each(|s| {
+                if let Some(i) = t.iter().position(|e| e == s) {
+                    m[i] += F::ONE;
+                }
+            });
+
+            (t, m)
+        };
+
+        chain_par![
+            [ss, es, k1s],
+            [s_m, s_t, vec![F::ZERO]], // s_range
+            [e_m, e_t, vec![F::ZERO]], // e_range
+            [k1_m, k1_t, vec![F::ZERO]], // k1_range
+            [ais, r1is, r2is_cyclo],
+            [r1i_m, r1i_t, vec![F::ZERO]], // r1i_range
+            [s_eval, ai_eval],
+            [sai_eval],
+            [sai],
+            [ct0i_check]
+        ]
+        .map(box_dense_poly)
+        .collect()
     }
 }
 
@@ -317,7 +466,11 @@ pub fn radix2_ifft<F: PrimeField>(buf: &mut [F], omega: F) {
 #[cfg(test)]
 mod test {
     use super::*;
-    use gkr::{dev::run_gkr_with_values, util::dev::seeded_std_rng};
+    use gkr::{
+        dev::run_gkr_with_values,
+        util::dev::seeded_std_rng,
+        util::{arithmetic::Field, Itertools},
+    };
     use goldilocks::{Goldilocks, GoldilocksExt2};
     use std::{fs::File, io::Read};
 
@@ -337,5 +490,137 @@ mod test {
         // let values = circuit.evaluate(expected_values);
         // assert_polys_eq(&values, &expected_values);
         run_gkr_with_values(&circuit, &values, &mut rng);
+    }
+
+    #[test]
+    pub fn test_fft_linear() {
+        type F = Goldilocks;
+        fn pad_to_power_of_two(coeffs: Vec<F>, target_len: usize) -> Vec<F> {
+            let mut padded_coeffs = coeffs;
+            padded_coeffs.resize(target_len, F::ZERO);
+            padded_coeffs
+        }
+
+        fn interleave_with_zeroes(coeffs: Vec<F>, total_len: usize) -> Vec<F> {
+            let mut interleaved_coeffs = vec![F::ZERO; total_len];
+            for (i, &coeff) in coeffs.iter().enumerate() {
+                interleaved_coeffs[2 * i] = coeff; // Place the coefficients at every other index
+            }
+            interleaved_coeffs
+        }
+
+        // Define two pairs of polynomials with 4 coefficients each
+        let p1_coeffs: Vec<F> = [1u128, 2, 3, 4]
+            .iter()
+            .map(|&x| F::from_u128(x))
+            .collect_vec();
+        let q1_coeffs: Vec<F> = [5u128, 6, 7, 8]
+            .iter()
+            .map(|&x| F::from_u128(x))
+            .collect_vec();
+        let p2_coeffs: Vec<F> = [9u128, 10, 11, 12]
+            .iter()
+            .map(|&x| F::from_u128(x))
+            .collect_vec();
+        let q2_coeffs: Vec<F> = [13u128, 14, 15, 16]
+            .iter()
+            .map(|&x| F::from_u128(x))
+            .collect_vec();
+
+        // Assume we want to perform FFT over size 16 (next power of two for length 8 + 8)
+        let log2_size = 4; // log2(16) = 4
+        let omega = root_of_unity(log2_size);
+
+        let p_coeffs = [p1_coeffs.clone(), p2_coeffs.clone()].concat();
+        let q_coeffs = [q1_coeffs.clone(), q2_coeffs.clone()].concat();
+
+        // Pad polynomials to length 8 (next power of two for 4 + 4 coefficients)
+        let padded_p1 = pad_to_power_of_two(p1_coeffs, 8);
+        let padded_q1 = pad_to_power_of_two(q1_coeffs, 8);
+        let padded_p2 = pad_to_power_of_two(p2_coeffs, 8);
+        let padded_q2 = pad_to_power_of_two(q2_coeffs, 8);
+
+        // bit_reverse_permute(&mut p_coeffs);
+        // bit_reverse_permute(&mut q_coeffs);
+
+        // Concatenate padded coefficients for batched FFT
+        let p_coeffs = pad_to_power_of_two(p_coeffs, 16);
+        let q_coeffs = pad_to_power_of_two(q_coeffs, 16);
+
+        // Perform FFT on the concatenated coefficients
+        let mut fft_p = p_coeffs.clone();
+        let mut fft_q = q_coeffs.clone();
+        radix2_fft(&mut fft_p, omega);
+        radix2_fft(&mut fft_q, omega);
+
+        println!("fft_p {:?}", fft_p);
+        println!("fft_q {:?}", fft_q);
+
+        // Perform element-wise multiplication in the frequency domain
+        let fft_pq: Vec<F> = fft_p
+            .iter()
+            .zip(fft_q.iter())
+            .map(|(p, q)| *p * *q)
+            .collect();
+
+        // Perform IFFT to get the resulting coefficients in the time domain
+        let mut pq_coeffs = fft_pq.clone();
+        radix2_ifft(&mut pq_coeffs, omega);
+
+        // Split the result back into two parts
+        let pq1_coeffs = &pq_coeffs[..8]; // Result for P1 * Q1
+        let pq2_coeffs = &pq_coeffs[8..]; // Result for P2 * Q2
+
+        // To verify, perform individual FFT-based multiplications for P1 * Q1 and P2 * Q2
+        let omega = root_of_unity(log2_size - 1);
+
+        let mut fft_p1 = padded_p1.clone();
+        let mut fft_q1 = padded_q1.clone();
+        radix2_fft(&mut fft_p1, omega);
+        radix2_fft(&mut fft_q1, omega);
+        println!("fft_p1 {:?}", fft_p1);
+        println!("fft_q1 {:?}", fft_q1);
+        let fft_pq1: Vec<F> = fft_p1
+            .iter()
+            .zip(fft_q1.iter())
+            .map(|(p, q)| *p * *q)
+            .collect();
+        let mut pq1_check = fft_pq1.clone();
+        radix2_ifft(&mut pq1_check, omega);
+
+        let mut fft_p2 = padded_p2.clone();
+        let mut fft_q2 = padded_q2.clone();
+        radix2_fft(&mut fft_p2, omega);
+        radix2_fft(&mut fft_q2, omega);
+
+        println!("fft_p2 {:?}", fft_p2);
+        println!("fft_q2 {:?}", fft_q2);
+        let fft_pq2: Vec<F> = fft_p2
+            .iter()
+            .zip(fft_q2.iter())
+            .map(|(p, q)| *p * *q)
+            .collect();
+        let mut pq2_check = fft_pq2.clone();
+        radix2_ifft(&mut pq2_check, omega);
+
+        // Check that the batched result matches the individual results
+        assert_eq!(pq1_coeffs, pq1_check, "PQ1 does not match");
+        assert_eq!(pq2_coeffs, pq2_check, "PQ2 does not match");
+    }
+
+    fn bit_reverse_permute<F: Clone>(coeffs: &mut [F]) {
+        let n = coeffs.len();
+        let mut i = 0;
+        for j in 1..n {
+            let mut bit = n >> 1;
+            while i >= bit {
+                i -= bit;
+                bit >>= 1;
+            }
+            i += bit;
+            if j < i {
+                coeffs.swap(j, i);
+            }
+        }
     }
 }
