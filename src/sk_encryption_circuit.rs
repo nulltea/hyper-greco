@@ -3,6 +3,7 @@ use crate::constants::sk_enc_constants_1024_2x55_65537::{
 };
 use crate::pcs::{self, Ligero};
 use crate::poly::Poly;
+use gkr::izip_par;
 use gkr::transcript::TranscriptWrite;
 use gkr::util::arithmetic::radix2_fft;
 use gkr::{
@@ -20,9 +21,10 @@ use gkr::{
     },
 };
 use itertools::chain;
-use rayon::iter::ParallelIterator;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::Deserialize;
 use std::cmp::{max, min};
+use std::iter;
 
 const E_BOUND_LEN: usize = (2 * E_BOUND + 1).next_power_of_two().ilog2() as usize;
 const K1_BOUND_LEN: usize = (2 * K1_BOUND + 1).next_power_of_two().ilog2() as usize;
@@ -65,13 +67,13 @@ impl BfvEncryptBlock {
         (2 * R2_BOUNDS[0] + 1).next_power_of_two().ilog2() as usize
     }
 
-    pub fn r1i_bound_len(&self) -> usize {
+    pub fn r1i_bound_len(&self) -> Vec<usize> {
         R1_BOUNDS
             .into_iter()
             .take(self.num_reps)
-            .map(|r1_bounds| (2 * r1_bounds + 1).next_power_of_two().ilog2() as usize)
-            .max()
-            .unwrap()
+            .map(|b| (2 * b + 1).next_power_of_two().ilog2() as usize)
+            // .max()
+            .collect()
     }
 
     // single block
@@ -86,16 +88,46 @@ impl BfvEncryptBlock {
         let log2_size = self.log2_size();
 
         let ai = circuit.insert(InputNode::new(log2_size, self.num_reps));
-        let r1i = circuit.insert(InputNode::new(log2_size, self.num_reps));
-        let r2i = circuit.insert(InputNode::new(poly_log2_size, self.num_reps));
 
-        let r1i_m = circuit.insert(InputNode::new(self.r1i_bound_len(), 1));
-        let r1i_t = circuit.insert(InputNode::new(self.r1i_bound_len(), 1));
-        let r1i_range = circuit.insert(LogUpNode::new(
-            self.r1i_bound_len(),
-            log2_size + self.num_reps - 1,
-            1,
-        ));
+        let r1is = iter::repeat_with(|| circuit.insert(InputNode::new(log2_size, 1)))
+            .take(self.num_reps)
+            .collect_vec();
+
+        for i in 0..self.num_reps {
+            let log2_t_size = self.r1i_bound_len()[i];
+            println!("log2_t_size {:?}", log2_t_size);
+            let r1i_m = circuit.insert(InputNode::new(log2_t_size, 1));
+            let r1i_t = circuit.insert(InputNode::new(log2_t_size, 1));
+            let r1i_range = circuit.insert(LogUpNode::new(log2_t_size, log2_size, 1));
+            let r1i = r1is[i];
+
+            connect!(circuit {
+                r1i_range <- r1i_m, r1i_t, r1i;
+            });
+        }
+
+        let r1is_par = {
+            let r1i_size = 1usize << log2_size;
+            println!("r1i_size {:?}", r1i_size);
+            // or w/0 cycle since num reps int node??
+            let gates = (0..self.num_reps)
+                .flat_map(|i| (0..r1i_size).map(move |j| VanillaGate::relay((i, j))))
+                .collect_vec();
+            println!("r1is_par gates {:?}", gates.len());
+
+            circuit.insert(VanillaNode::new(
+                self.num_reps,
+                log2_size,
+                gates.clone(),
+                1,
+            ))
+        };
+
+        r1is.iter()
+            .take(self.num_reps)
+            .for_each(|&r1i| circuit.connect(r1i, r1is_par));
+
+        let r2i = circuit.insert(InputNode::new(poly_log2_size, self.num_reps));
 
         let s_eval = circuit.insert(FftNode::forward(log2_size + self.num_reps - 1));
         let ai_eval = circuit.insert(FftNode::forward(log2_size + self.num_reps - 1));
@@ -110,7 +142,6 @@ impl BfvEncryptBlock {
 
         let r2i_cyclo = {
             let r2i_size = (1usize << poly_log2_size) - 1;
-            println!("circuit r2i_size {:?}", r2i_size);
             let gates = chain![
                 (0..r2i_size).map(|i| VanillaGate::relay((0, i))),
                 [VanillaGate::constant(F::ZERO)],
@@ -147,16 +178,15 @@ impl BfvEncryptBlock {
         };
 
         connect!(circuit {
-            r1i_range <- r1i_m, r1i_t, r1i;
             s_eval <- s;
             ai_eval <- ai;
             sai_eval <- s_eval, ai_eval;
             sai <- sai_eval;
             r2i_cyclo <- r2i;
-            sum <- sai, e, k1, r1i, r2i_cyclo;
+            sum <- sai, e, k1, r1is_par, r2i_cyclo;
         });
 
-        sai
+        r1is_par
     }
 }
 
@@ -241,7 +271,7 @@ impl BfvEncrypt {
             r2is.push(r2i.as_ref().to_vec());
 
             let r1i = Poly::<F>::new_padded(args.r1is[z].clone(), log2_size);
-            r1is.extend(r1i.as_ref().to_vec());
+            r1is.push(r1i.as_ref().to_vec());
 
             let ai = Poly::<F>::new_padded(args.ais[z].clone(), log2_size);
             ais.extend(ai.as_ref().to_vec());
@@ -297,7 +327,7 @@ impl BfvEncrypt {
             .iter()
             .take(self.block.num_reps)
             .flat_map(|r2i| {
-                let mut result = vec![F::ZERO; 2*N]; // Allocate result vector of size 2N-1
+                let mut result = vec![F::ZERO; 2 * N]; // Allocate result vector of size 2N-1
 
                 println!("r2i size {:?}", r2i.len());
 
@@ -322,10 +352,10 @@ impl BfvEncrypt {
             .iter()
             .zip(es.iter())
             .zip(k1s.iter())
-            .zip(r1is.iter())
+            .zip(r1is.iter().flatten())
             .zip(r2is_cyclo.iter())
-            .map(|((((sai0, e), k1), r1i), r2i_cyclo)| {
-                *sai0 + *e + *k1 * k0i_constants[0] + *r1i * qi_constants[0] + *r2i_cyclo
+            .map(|((((&sai0, &e), &k1), &r1i), &r2i_cyclo)| {
+                sai0 + e + k1 * k0i_constants[0] + r1i * qi_constants[0] + r2i_cyclo
             })
             .collect_vec();
 
@@ -387,28 +417,49 @@ impl BfvEncrypt {
         // };
 
         // this is not ideal, need to have a separate range for each parallel sub circuit
-        let (r1i_t, r1i_m) = {
-            let mut t = (0..=R1_BOUNDS.into_iter().max().unwrap())
-                .flat_map(|b| [F::ZERO - F::from(b), F::from(b)])
-                .collect_vec();
-            t.resize(1 << self.block.r1i_bound_len(), F::ZERO);
-            let mut m = vec![F::ZERO; 1 << self.block.r1i_bound_len()];
-            r1is.iter().for_each(|s| {
-                if let Some(i) = t.iter().position(|e| e == s) {
-                    m[i] += F::ONE;
-                }
-            });
+        let r1i_range_values = izip!(R1_BOUNDS, self.block.r1i_bound_len(), &r1is)
+            .map(|(bound, bound_len, r1i)| {
+                let mut t = (0..=bound)
+                    .flat_map(|b| [F::ZERO - F::from(b), F::from(b)])
+                    .collect_vec();
+                t.resize(1 << bound_len, F::ZERO);
+                let mut m = vec![F::ZERO; 1 << bound_len];
+                r1i.iter().for_each(|s| {
+                    if let Some(i) = t.iter().position(|e| e == s) {
+                        m[i] += F::ONE;
+                    }
+                });
 
-            (t, m)
-        };
+                (m, t)
+            })
+            .take(self.block.num_reps)
+            .flat_map(|(m, t)| [m, t, vec![F::ZERO]])
+            .collect_vec();
+
+        let r1is_par = r1is
+            .iter()
+            .take(self.block.num_reps)
+            .flatten()
+            .cloned()
+            .collect_vec();
+
+        println!(
+            "r1is sizes {:?}",
+            r1is.iter().map(|r1i| r1i.len()).collect_vec()
+        );
+
+        println!("r1is_par size {:?}", r1is_par.len());
 
         chain_par![
             [ss, es, k1s],
             [s_m, s_t, vec![F::ZERO]],   // s_range
             [e_m, e_t, vec![F::ZERO]],   // e_range
             [k1_m, k1_t, vec![F::ZERO]], // k1_range
-            [ais, r1is, r2is],
-            [r1i_m, r1i_t, vec![F::ZERO]], // r1i_range
+            [ais],
+            r1is,
+            r1i_range_values, // r1i_range
+            [r1is_par],
+            [r2is],
             [s_eval, ai_eval],
             [sai_eval],
             [sai],
