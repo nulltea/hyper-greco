@@ -41,12 +41,8 @@ impl<F: PrimeField> Poly<F> {
         Poly { coefficients: shifted }
     }
 
-    pub fn cyclo_padded(log2_size: usize) -> Self {
-        let mut coefficients = vec![F::ONE];
-        coefficients.resize(1 << log2_size, F::ZERO);
-        *coefficients.last_mut().unwrap() = F::ONE;
-
-        Poly { coefficients }
+    pub fn to_vec(&self) -> Vec<F> {
+        self.coefficients.clone()
     }
 }
 
