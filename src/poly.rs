@@ -51,35 +51,3 @@ impl<F: PrimeField> AsRef<[F]> for Poly<F> {
        &self.coefficients
     }
 }
-
-// pub struct PolyAssigned<F: ScalarField> {
-//     pub assigned_coefficients: Vec<AssignedValue<F>>,
-// }
-
-// impl<F: ScalarField> PolyAssigned<F> {
-//     pub fn new(ctx: &mut Context<F>, poly: Poly<F>) -> Self {
-//         let assigned_coefficients = ctx.assign_witnesses(poly.coefficients);
-//         PolyAssigned {
-//             assigned_coefficients,
-//         }
-//     }
-
-//     /// Adds `upper_bound` to the coefficients of the polynomial and constrains them to be in the range `[0, 2*upper_bound]`.
-//     pub fn range_check(&self, ctx_gate: &mut Context<F>, range: &RangeChip<F>, upper_bound: u64) {
-//         let bound_constant = Constant(F::from(upper_bound));
-
-//         for coeff in &self.assigned_coefficients {
-//             let shifted_coeff = range.gate().add(ctx_gate, *coeff, bound_constant);
-//             range.check_less_than_safe(ctx_gate, shifted_coeff, (2 * upper_bound) + 1);
-//         }
-//     }
-
-//     pub fn enforce_eval_at_gamma(
-//         &self,
-//         ctx_rlc: &mut Context<F>,
-//         rlc: &RlcChip<F>,
-//     ) -> AssignedValue<F> {
-//         let rlc_trace = rlc.compute_rlc_fixed_len(ctx_rlc, self.assigned_coefficients.clone());
-//         rlc_trace.rlc_val
-//     }
-// }
