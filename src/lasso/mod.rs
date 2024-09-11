@@ -36,7 +36,7 @@ pub mod table;
 #[derive(Debug)]
 pub struct LassoNode<F: Field, E, Lookups: CircuitLookups, const C: usize, const M: usize> {
     num_vars: usize,
-    preprocessing: LassoLookupsPreprocessing<F, E>,
+    preprocessing: LassoPreprocessing<F, E>,
     // inputs_arity: usize,
     lookups: Vec<Lookups>,
     // num_reps: usize,
@@ -168,7 +168,7 @@ impl<
 {
     pub fn new(
         // table: Box<dyn DecomposableTable<F, E>>,
-        preprocessing: LassoLookupsPreprocessing<F, E>,
+        preprocessing: LassoPreprocessing<F, E>,
         num_vars: usize,
         lookups: Vec<Lookups>,
     ) -> Self {
@@ -218,8 +218,11 @@ impl<
                         let counter = final_cts_i[memory_address];
                         read_cts_i[*j] = counter;
                         final_cts_i[memory_address] = counter + 1;
-                        subtable_lookups[*j] = self.preprocessing.materialized_subtables
-                            [subtable_index][memory_address];
+                        subtable_lookups[*j] = self
+                            .preprocessing
+                            .materialized_subtables
+                            .as_ref()
+                            .expect("subtables not materialized")[subtable_index][memory_address];
                     }
                 }
 
@@ -317,7 +320,7 @@ impl<
 
     #[allow(clippy::too_many_arguments)]
     fn prove_memory_checking<'a>(
-        preprocessing: &'a LassoLookupsPreprocessing<F, E>,
+        preprocessing: &'a LassoPreprocessing<F, E>,
         dims: &'a [BoxMultilinearPoly<'a, F, E>],
         read_ts_polys: &'a [BoxMultilinearPoly<'a, F, E>],
         final_cts_polys: &'a [BoxMultilinearPoly<'a, F, E>],
@@ -331,7 +334,10 @@ impl<
 
         let num_memories = preprocessing.num_memories;
         let memories = (0..num_memories).map(|memory_index| {
-            let subtable_poly = &preprocessing.materialized_subtables
+            let subtable_poly = &preprocessing
+                .materialized_subtables
+                .as_ref()
+                .expect("subtables not materialized")
                 [preprocessing.memory_to_subtable_index[memory_index]];
             Memory::<F, E>::new(subtable_poly, &e_polys[memory_index])
         });
@@ -370,7 +376,7 @@ impl<
     }
 
     fn verify_memory_checking(
-        preprocessing: &LassoLookupsPreprocessing<F, E>,
+        preprocessing: &LassoPreprocessing<F, E>,
         num_vars: usize,
         gamma: &E,
         tau: &E,
@@ -551,30 +557,31 @@ pub struct LassoPolynomials<'a, F: PrimeField, E: ExtensionField<F>> {
 }
 
 #[derive(Debug)]
-pub struct LassoLookupsPreprocessing<F: Field, E> {
+pub struct LassoPreprocessing<F: Field, E> {
     subtable_to_memory_indices: Vec<Vec<usize>>,
     lookup_to_memory_indices: Vec<Vec<usize>>,
     memory_to_subtable_index: Vec<usize>,
     memory_to_dimension_index: Vec<usize>,
-    materialized_subtables: Vec<BoxMultilinearPoly<'static, F, E>>,
+    materialized_subtables: Option<Vec<BoxMultilinearPoly<'static, F, E>>>,
     // lookup_id_to_index: HashMap<SubtableId, usize>,
     subtable_evaluate_mle_exprs: Vec<MultilinearPolyTerms<F>>,
     // subtables: Vec<Box<dyn LassoSubtable<F, E>>>,
     num_memories: usize, // C
-    _marker: PhantomData<E>,
 }
 
-impl<F: PrimeField, E: ExtensionField<F>> LassoLookupsPreprocessing<F, E> {
+impl<F: PrimeField, E: ExtensionField<F>> LassoPreprocessing<F, E> {
     pub fn preprocess<
         const C: usize,
         const M: usize,
         Lookups: CircuitLookups,
         Subtables: SubtableSet<F, E>,
     >() -> Self {
-        let materialized_subtables = Self::materialize_subtables::<M, Subtables>()
-            .into_iter()
-            .map(box_dense_poly)
-            .collect_vec();
+        let materialized_subtables = Some(
+            Self::materialize_subtables::<M, Subtables>()
+                .into_iter()
+                .map(box_dense_poly)
+                .collect_vec(),
+        );
 
         // Build a mapping from subtable type => chunk indices that access that subtable type
         let mut subtable_indices: Vec<SubtableIndices> =
@@ -642,7 +649,6 @@ impl<F: PrimeField, E: ExtensionField<F>> LassoLookupsPreprocessing<F, E> {
             memory_to_dimension_index,
             lookup_to_memory_indices,
             subtable_evaluate_mle_exprs,
-            _marker: PhantomData,
         }
     }
 
@@ -655,6 +661,18 @@ impl<F: PrimeField, E: ExtensionField<F>> LassoLookupsPreprocessing<F, E> {
             subtables.push(subtable.materialize(M));
         }
         subtables
+    }
+
+    pub fn to_verifier_preprocessing(&self) -> LassoPreprocessing<F, E> {
+        LassoPreprocessing {
+            subtable_to_memory_indices: self.subtable_to_memory_indices.clone(),
+            lookup_to_memory_indices: self.lookup_to_memory_indices.clone(),
+            memory_to_subtable_index: self.memory_to_subtable_index.clone(),
+            memory_to_dimension_index: self.memory_to_dimension_index.clone(),
+            materialized_subtables: None,
+            subtable_evaluate_mle_exprs: self.subtable_evaluate_mle_exprs.clone(),
+            num_memories: self.num_memories,
+        }
     }
 }
 

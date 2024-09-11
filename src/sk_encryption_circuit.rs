@@ -1,7 +1,7 @@
-use crate::constants::sk_enc_constants_1024_4x55_65537::{
+use crate::constants::sk_enc_constants_1024_2x55_65537::{
     E_BOUND, K0IS, K1_BOUND, N, QIS, R1_BOUNDS, R2_BOUNDS,
 };
-use crate::lasso::CircuitLookups;
+use crate::lasso::{CircuitLookups, LassoPreprocessing};
 use crate::subtable_enum;
 use crate::{
     lasso::{
@@ -40,28 +40,61 @@ use serde::Deserialize;
 use std::any::TypeId;
 use std::cmp::min;
 use std::iter;
+use std::marker::PhantomData;
 use strum_macros::{EnumCount, EnumIter};
 use tracing::info_span;
 
 const E_BOUND_LEN: usize = (2 * E_BOUND + 1).next_power_of_two().ilog2() as usize;
 const K1_BOUND_LEN: usize = (2 * K1_BOUND + 1).next_power_of_two().ilog2() as usize;
 
+const LIMB_BITS: usize = 16;
+const C: usize = 8;
+const M: usize = 1 << LIMB_BITS;
+
 subtable_enum!(
     RangeSubtables,
-    Full: FullLimbSubtable<F, E>
+    Full: FullLimbSubtable<F, E>,
+    ReminderR2i: ReminderSubtable<F, E, { BfvEncryptBlock::<13>::r2i_bound_log2_size() }>
 );
 
 #[derive(Copy, Clone, Debug, EnumCount, EnumIter)]
 #[enum_dispatch(LookupType)]
 pub enum RangeLookups {
     // Range32(RangeStategy<32>),
-    Range45(RangeStategy<45>),
-    RangeTest(RangeStategy<55>),
+    RangeR2i(RangeStategy<{ BfvEncryptBlock::<13>::r2i_bound_log2_size() }>),
+    // RangeTest(RangeStategy<55>),
 }
 impl CircuitLookups for RangeLookups {}
 
 pub type Brakedown<F> =
     MultilinearBrakedown<F, plonkish_backend::util::hash::Keccak256, BrakedownSpec6>;
+
+pub type ProverKey<
+    F,
+    E,
+    Pcs: PolynomialCommitmentScheme<
+        F,
+        Polynomial = MultilinearPolynomial<F>,
+        CommitmentChunk = Output<Keccak256>,
+    >,
+> = (
+    LassoPreprocessing<F, E>,
+    Vec<(Pcs::Commitment, Pcs::ProverParam)>,
+);
+
+pub type VerifierKey<
+    F,
+    E,
+    Pcs: PolynomialCommitmentScheme<
+        F,
+        Polynomial = MultilinearPolynomial<F>,
+        CommitmentChunk = Output<Keccak256>,
+    >,
+> = (
+    LassoPreprocessing<F, E>,
+    Vec<(Pcs::Commitment, Pcs::VerifierParam)>,
+);
+
 
 /// `BfvSkEncryptionCircuit` is a circuit that checks the correct formation of a ciphertext resulting from BFV secret key encryption
 /// All the polynomials coefficients and scalars are normalized to be in the range `[0, p)` where p is the modulus of the prime field of the circuit
@@ -85,19 +118,18 @@ pub struct BfvSkEncryptArgs {
     ct0is: Vec<Vec<String>>,
 }
 
-pub struct BfvEncryptBlock {
+pub struct BfvEncryptBlock<const POLY_LOG2_SIZE: usize> {
     num_reps: usize,
 }
 
-impl BfvEncryptBlock {
-    pub const LOG2_POLY_SIZE: usize = 10;
-
+impl<const POLY_LOG2_SIZE: usize> BfvEncryptBlock<POLY_LOG2_SIZE> {
     pub const fn log2_size(&self) -> usize {
-        Self::LOG2_POLY_SIZE + 1
+        POLY_LOG2_SIZE + 1
     }
 
-    pub fn r2i_bound_log2_size(&self) -> usize {
-        (2 * R2_BOUNDS[0] + 1).next_power_of_two().ilog2() as usize
+    pub const fn r2i_bound_log2_size() -> usize {
+        // (2 * R2_BOUNDS[0] + 1).next_power_of_two().ilog2() as usize
+        64
     }
 
     pub fn r1i_bound_log2_size(&self) -> Vec<usize> {
@@ -115,8 +147,9 @@ impl BfvEncryptBlock {
         s: NodeId,
         e: NodeId,
         k1: NodeId,
+        preprocessing: LassoPreprocessing<F, E>,
     ) -> NodeId {
-        let poly_log2_size = Self::LOG2_POLY_SIZE;
+        let poly_log2_size = POLY_LOG2_SIZE;
         let log2_size = self.log2_size();
 
         let es = {
@@ -152,16 +185,16 @@ impl BfvEncryptBlock {
             .take(self.num_reps)
             .collect_vec();
 
-        for (i, &r1i) in r1is.iter().enumerate().take(self.num_reps) {
-            let log2_t_size = self.r1i_bound_log2_size()[i];
-            let r1i_m = circuit.insert(InputNode::new(log2_t_size, 1));
-            let r1i_t = circuit.insert(InputNode::new(log2_t_size, 1));
-            let r1i_range = circuit.insert(LogUpNode::new(log2_t_size, log2_size, 1));
+        // for (i, &r1i) in r1is.iter().enumerate().take(self.num_reps) {
+        //     let log2_t_size = self.r1i_bound_log2_size()[i];
+        //     let r1i_m = circuit.insert(InputNode::new(log2_t_size, 1));
+        //     let r1i_t = circuit.insert(InputNode::new(log2_t_size, 1));
+        //     let r1i_range = circuit.insert(LogUpNode::new(log2_t_size, log2_size, 1));
 
-            connect!(circuit {
-                r1i_range <- r1i_m, r1i_t, r1i;
-            });
-        }
+        //     connect!(circuit {
+        //         r1i_range <- r1i_m, r1i_t, r1i;
+        //     });
+        // }
 
         let r1iqis = {
             let r1i_size = 1usize << log2_size;
@@ -184,7 +217,19 @@ impl BfvEncryptBlock {
         // let r2is_m = circuit.insert(InputNode::new(self.r2i_bound_log2_size(), 1));
         // let r2is_t = circuit.insert(InputNode::new(self.r2i_bound_log2_size(), 1));
         // let range_table = Box::new(RangeTable::<F, 22, 8>::new());
-        // let r2is_range = circuit.insert(LassoNode::new(range_table, self.r2i_bound_log2_size()));
+        // let r2is_range = {
+        //     let num_vars = poly_log2_size + self.num_reps - 1;
+        //     circuit.insert(LassoNode::<F, E, RangeLookups, C, M>::new(
+        //         preprocessing,
+        //         num_vars,
+        //         chain![iter::repeat(RangeLookups::RangeR2i(
+        //             RangeStategy::<{ Self::r2i_bound_log2_size() }>
+        //         ))
+        //         .take(1 << num_vars),]
+        //         .collect_vec(),
+        //     ))
+        // };
+        // circuit.connect(r2is, r2is_range);
 
         let s_eval = circuit.insert(FftNode::forward(log2_size));
         circuit.connect(s, s_eval);
@@ -259,27 +304,109 @@ impl BfvEncryptBlock {
     }
 }
 
-pub struct BfvEncrypt {
-    block: BfvEncryptBlock,
+pub struct BfvEncrypt<const POLY_LOG2_SIZE: usize> {
+    block: BfvEncryptBlock<POLY_LOG2_SIZE>,
 }
 
-impl BfvEncrypt {
+impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
     pub fn new(num_reps: usize) -> Self {
         Self {
             block: BfvEncryptBlock { num_reps },
         }
     }
 
-    pub const LOG2_POLY_SIZE: usize = 10;
-
     pub const fn log2_size(&self) -> usize {
         // self.perm.log2_size()
-        Self::LOG2_POLY_SIZE + 1
+        POLY_LOG2_SIZE + 1
+    }
+
+    #[allow(clippy::type_complexity)]
+    pub fn setup<
+        F: PrimeField,
+        E: ExtensionField<F>,
+        Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
+    >(
+        &self,
+        rng: impl RngCore + Clone,
+    ) -> (ProverKey<F, E, Pcs>, VerifierKey<F, E, Pcs>) {
+        let lasso_preprocessing = info_span!("lasso preprocessing").in_scope(|| {
+            LassoPreprocessing::<F, E>::preprocess::<C, M, RangeLookups, RangeSubtables<F, E>>()
+        });
+
+        let (comms, pks, vks): (
+            Vec<Pcs::Commitment>,
+            Vec<Pcs::ProverParam>,
+            Vec<Pcs::VerifierParam>,
+        ) = info_span!("pcs commit tables").in_scope(|| {
+            iter::once({
+                let t = vec![F::ZERO, F::ONE, F::ZERO - F::ONE, F::ZERO];
+                let p = Pcs::setup(t.len(), 1, rng.clone()).unwrap();
+                let (pp, vp) = Pcs::trim(&p, t.len(), 0).unwrap();
+
+                (
+                    Pcs::commit(&pp, &MultilinearPolynomial::new(t)).unwrap(),
+                    pp,
+                    vp,
+                )
+            })
+            .chain(iter::once({
+                let mut t = (0..=E_BOUND)
+                    .flat_map(|b| [F::ZERO - F::from(b), F::from(b)])
+                    .collect_vec();
+                t.resize(1 << E_BOUND_LEN, F::ZERO);
+                let p = Pcs::setup(t.len(), 1, rng.clone()).unwrap();
+                let (pp, vp) = Pcs::trim(&p, t.len(), 0).unwrap();
+                (
+                    Pcs::commit(&pp, &MultilinearPolynomial::new(t)).unwrap(),
+                    pp,
+                    vp,
+                )
+            }))
+            .chain(iter::once({
+                let mut t = (0..=K1_BOUND)
+                    .flat_map(|b| [F::ZERO - F::from(b), F::from(b)])
+                    .collect_vec();
+                t.resize(1 << K1_BOUND_LEN, F::ZERO);
+                let p = Pcs::setup(t.len(), 1, rng.clone()).unwrap();
+                let (pp, vp) = Pcs::trim(&p, t.len(), 0).unwrap();
+                (
+                    Pcs::commit(&pp, &MultilinearPolynomial::new(t)).unwrap(),
+                    pp,
+                    vp,
+                )
+            }))
+            .chain(
+                izip!(R1_BOUNDS, self.block.r1i_bound_log2_size())
+                    .map(|(bound, bound_len)| {
+                        let mut t = (0..=bound)
+                            .flat_map(|b| [F::ZERO - F::from(b), F::from(b)])
+                            .collect_vec();
+                        t.resize(1 << bound_len, F::ZERO);
+                        let p = Pcs::setup(t.len(), 1, rng.clone()).unwrap();
+                        let (pp, vp) = Pcs::trim(&p, t.len(), 0).unwrap();
+                        (
+                            Pcs::commit(&pp, &MultilinearPolynomial::new(t)).unwrap(),
+                            pp,
+                            vp,
+                        )
+                    })
+                    .take(self.block.num_reps),
+            )
+            .multiunzip()
+        });
+
+        let lasso_verifier = lasso_preprocessing.to_verifier_preprocessing();
+
+        let pk = (lasso_preprocessing, izip!(comms.clone(), pks).collect_vec());
+        let vk = (lasso_verifier, izip!(comms, vks).collect_vec());
+
+        (pk, vk)
     }
 
     pub fn configure<F: PrimeField, E: ExtensionField<F>>(
         &self,
         circuit: &mut Circuit<F, E>,
+        preprocessing: LassoPreprocessing<F, E>,
     ) -> NodeId {
         let log2_size = self.log2_size();
 
@@ -287,25 +414,25 @@ impl BfvEncrypt {
         let e = circuit.insert(InputNode::new(log2_size, 1));
         let k1 = circuit.insert(InputNode::new(log2_size, 1));
 
-        let s_m = circuit.insert(InputNode::new(2, 1));
-        let s_t = circuit.insert(InputNode::new(2, 1));
-        let s_range = circuit.insert(LogUpNode::new(2, log2_size, 1));
+        // let s_m = circuit.insert(InputNode::new(2, 1));
+        // let s_t = circuit.insert(InputNode::new(2, 1));
+        // let s_range = circuit.insert(LogUpNode::new(2, log2_size, 1));
 
-        let e_m = circuit.insert(InputNode::new(E_BOUND_LEN, 1));
-        let e_t = circuit.insert(InputNode::new(E_BOUND_LEN, 1));
-        let e_range = circuit.insert(LogUpNode::new(E_BOUND_LEN, log2_size, 1));
+        // let e_m = circuit.insert(InputNode::new(E_BOUND_LEN, 1));
+        // let e_t = circuit.insert(InputNode::new(E_BOUND_LEN, 1));
+        // let e_range = circuit.insert(LogUpNode::new(E_BOUND_LEN, log2_size, 1));
 
-        let k1_m = circuit.insert(InputNode::new(K1_BOUND_LEN, 1));
-        let k1_t = circuit.insert(InputNode::new(K1_BOUND_LEN, 1));
-        let k1_range = circuit.insert(LogUpNode::new(K1_BOUND_LEN, log2_size, 1));
+        // let k1_m = circuit.insert(InputNode::new(K1_BOUND_LEN, 1));
+        // let k1_t = circuit.insert(InputNode::new(K1_BOUND_LEN, 1));
+        // let k1_range = circuit.insert(LogUpNode::new(K1_BOUND_LEN, log2_size, 1));
 
-        connect!(circuit {
-            s_range <- s_m, s_t, s;
-            e_range <- e_m, e_t, e;
-            k1_range <- k1_m, k1_t, k1;
-        });
+        // connect!(circuit {
+        //     s_range <- s_m, s_t, s;
+        //     e_range <- e_m, e_t, e;
+        //     k1_range <- k1_m, k1_t, k1;
+        // });
 
-        self.block.configure(circuit, s, e, k1)
+        self.block.configure(circuit, s, e, k1, preprocessing)
     }
 
     pub fn gen_values<F: PrimeField, E: ExtensionField<F>>(
@@ -508,14 +635,15 @@ impl BfvEncrypt {
 
         chain_par![
             [s.to_vec(), e.to_vec(), k1.to_vec()],
-            [s_m, s_t, vec![F::ZERO]],   // s_range
-            [e_m, e_t, vec![F::ZERO]],   // e_range
-            [k1_m, k1_t, vec![F::ZERO]], // k1_range
+            // [s_m, s_t, vec![F::ZERO]],   // s_range
+            // [e_m, e_t, vec![F::ZERO]],   // e_range
+            // [k1_m, k1_t, vec![F::ZERO]], // k1_range
             [es, k1k0is],
             ais,
             r1is,
-            r1i_range_values, // r1i_range
+            // r1i_range_values, // r1i_range
             [r1iqis],
+            // [r2is, vec![F::ZERO]],
             [r2is],
             // [r2is_m, r2is_t, vec![F::ZERO]] // r2is_range
             [s_eval.clone()],
@@ -529,78 +657,9 @@ impl BfvEncrypt {
         .collect()
     }
 
-    #[allow(clippy::type_complexity)]
-    pub fn setup<
-        F: PrimeField,
-        PCS: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
-    >(
-        &self,
-        rng: impl RngCore + Clone,
-    ) -> (
-        Vec<PCS::Commitment>,
-        Vec<PCS::ProverParam>,
-        Vec<PCS::VerifierParam>,
-    ) {
-        iter::once({
-            let t = vec![F::ZERO, F::ONE, F::ZERO - F::ONE, F::ZERO];
-            let p = PCS::setup(t.len(), 1, rng.clone()).unwrap();
-            let (pp, vp) = PCS::trim(&p, t.len(), 0).unwrap();
-
-            (
-                PCS::commit(&pp, &MultilinearPolynomial::new(t)).unwrap(),
-                pp,
-                vp,
-            )
-        })
-        .chain(iter::once({
-            let mut t = (0..=E_BOUND)
-                .flat_map(|b| [F::ZERO - F::from(b), F::from(b)])
-                .collect_vec();
-            t.resize(1 << E_BOUND_LEN, F::ZERO);
-            let p = PCS::setup(t.len(), 1, rng.clone()).unwrap();
-            let (pp, vp) = PCS::trim(&p, t.len(), 0).unwrap();
-            (
-                PCS::commit(&pp, &MultilinearPolynomial::new(t)).unwrap(),
-                pp,
-                vp,
-            )
-        }))
-        .chain(iter::once({
-            let mut t = (0..=K1_BOUND)
-                .flat_map(|b| [F::ZERO - F::from(b), F::from(b)])
-                .collect_vec();
-            t.resize(1 << K1_BOUND_LEN, F::ZERO);
-            let p = PCS::setup(t.len(), 1, rng.clone()).unwrap();
-            let (pp, vp) = PCS::trim(&p, t.len(), 0).unwrap();
-            (
-                PCS::commit(&pp, &MultilinearPolynomial::new(t)).unwrap(),
-                pp,
-                vp,
-            )
-        }))
-        .chain(
-            izip!(R1_BOUNDS, self.block.r1i_bound_log2_size())
-                .map(|(bound, bound_len)| {
-                    let mut t = (0..=bound)
-                        .flat_map(|b| [F::ZERO - F::from(b), F::from(b)])
-                        .collect_vec();
-                    t.resize(1 << bound_len, F::ZERO);
-                    let p = PCS::setup(t.len(), 1, rng.clone()).unwrap();
-                    let (pp, vp) = PCS::trim(&p, t.len(), 0).unwrap();
-                    (
-                        PCS::commit(&pp, &MultilinearPolynomial::new(t)).unwrap(),
-                        pp,
-                        vp,
-                    )
-                })
-                .take(self.block.num_reps),
-        )
-        .multiunzip()
-    }
-
     pub fn prove<
         F: PrimeField,
-        PCS: PolynomialCommitmentScheme<
+        Pcs: PolynomialCommitmentScheme<
             F,
             Polynomial = MultilinearPolynomial<F>,
             CommitmentChunk = Output<Keccak256>,
@@ -608,76 +667,79 @@ impl BfvEncrypt {
     >(
         &self,
         args: &BfvSkEncryptArgs,
-        pk: &[(&PCS::Commitment, PCS::ProverParam)],
+        pk: ProverKey<F, F, Pcs>,
     ) -> Vec<u8> {
+        let (preprocessing, pk) = pk;
         let mut transcript = Keccak256Transcript::<Vec<u8>>::default();
 
         let circuit = {
             let mut circuit = Circuit::<F, F>::default();
-            self.configure(&mut circuit);
+            self.configure(&mut circuit, preprocessing);
             circuit
         };
         let values = info_span!("wintess gen").in_scope(|| self.gen_values::<F, F>(args));
 
         let ct0is_claim = {
-            let point = transcript.squeeze_challenges(self.log2_size() + self.block.num_reps - 1);
+            let point = transcript.squeeze_challenges(self.ct0is_log2_size());
             let value = values.last().unwrap().evaluate(&point);
             EvalClaim::new(point.clone(), value)
         };
 
-        let mut output_claims = vec![EvalClaim::new(vec![], F::ZERO); 3 + self.block.num_reps]; // should be self.block.num_reps * 2 (for r2is range checks)
-        output_claims.push(ct0is_claim);
+        // let mut output_claims = vec![EvalClaim::new(vec![], F::ZERO); 4 + self.block.num_reps]; // should be self.block.num_reps * 2 (for r2is range checks)
+        // output_claims.push(ct0is_claim);
+        let output_claims = vec![ct0is_claim];
+
 
         let claims = info_span!("GKR prove")
             .in_scope(|| gkr::prove_gkr(&circuit, &values, &output_claims, &mut transcript))
             .unwrap();
 
-        info_span!("LogUp IOP prove").in_scope(|| {
-            let inputs_map = circuit.inputs().collect_vec();
+        // info_span!("LogUp IOP prove").in_scope(|| {
+        //     let inputs_map = circuit.inputs().collect_vec();
 
-            PCS::open(
-                &pk[0].1,
-                &MultilinearPolynomial::new(values[inputs_map[4]].to_dense()),
-                pk[0].0,
-                &claims[4][0].point().to_vec(),
-                &claims[4][0].value(),
-                &mut transcript,
-            )
-            .expect("failed to open `s` lookup table commitment");
+        //     Pcs::open(
+        //         &pk[0].1,
+        //         &MultilinearPolynomial::new(values[inputs_map[4]].to_dense()),
+        //         &pk[0].0,
+        //         &claims[4][0].point().to_vec(),
+        //         &claims[4][0].value(),
+        //         &mut transcript,
+        //     )
+        //     .expect("failed to open `s` lookup table commitment");
 
-            PCS::open(
-                &pk[1].1,
-                &MultilinearPolynomial::new(values[inputs_map[6]].to_dense()),
-                pk[1].0,
-                &claims[6][0].point().to_vec(),
-                &claims[6][0].value(),
-                &mut transcript,
-            )
-            .expect("failed to open `e` lookup table commitment");
+        //     Pcs::open(
+        //         &pk[1].1,
+        //         &MultilinearPolynomial::new(values[inputs_map[6]].to_dense()),
+        //         &pk[1].0,
+        //         &claims[6][0].point().to_vec(),
+        //         &claims[6][0].value(),
+        //         &mut transcript,
+        //     )
+        //     .expect("failed to open `e` lookup table commitment");
 
-            PCS::open(
-                &pk[2].1,
-                &MultilinearPolynomial::new(values[inputs_map[8]].to_dense()),
-                pk[2].0,
-                &claims[8][0].point().to_vec(),
-                &claims[8][0].value(),
-                &mut transcript,
-            )
-            .expect("failed to open `k1` lookup table commitment");
+        //     Pcs::open(
+        //         &pk[2].1,
+        //         &MultilinearPolynomial::new(values[inputs_map[8]].to_dense()),
+        //         &pk[2].0,
+        //         &claims[8][0].point().to_vec(),
+        //         &claims[8][0].value(),
+        //         &mut transcript,
+        //     )
+        //     .expect("failed to open `k1` lookup table commitment");
 
-            (0..self.block.num_reps).for_each(|i| {
-                let t_idx = 14 + 2 * i;
-                PCS::open(
-                    &pk[3 + i].1,
-                    &MultilinearPolynomial::new(values[inputs_map[t_idx]].to_dense()),
-                    pk[3 + i].0,
-                    &claims[t_idx][0].point().to_vec(),
-                    &claims[t_idx][0].value(),
-                    &mut transcript,
-                )
-                .expect("failed to open `r1i` lookup table commitment");
-            });
-        });
+        //     (0..self.block.num_reps).for_each(|i| {
+        //         let t_idx = 14 + 2 * i;
+        //         Pcs::open(
+        //             &pk[3 + i].1,
+        //             &MultilinearPolynomial::new(values[inputs_map[t_idx]].to_dense()),
+        //             &pk[3 + i].0,
+        //             &claims[t_idx][0].point().to_vec(),
+        //             &claims[t_idx][0].value(),
+        //             &mut transcript,
+        //         )
+        //         .expect("failed to open `r1i` lookup table commitment");
+        //     });
+        // });
 
         // let values = circuit.evaluate(expected_values);
         // assert_polys_eq(&values, &expected_values);
@@ -687,24 +749,26 @@ impl BfvEncrypt {
 
     pub fn verify<
         F: PrimeField,
-        PCS: PolynomialCommitmentScheme<
+        Pcs: PolynomialCommitmentScheme<
             F,
             Polynomial = MultilinearPolynomial<F>,
             CommitmentChunk = Output<Keccak256>,
         >,
     >(
         &self,
-        vk: &[(&PCS::Commitment, PCS::VerifierParam)],
+        vk: VerifierKey<F, F, Pcs>,
         proof: &[u8],
         ct0is: Vec<Vec<String>>,
     ) {
+        let (preprocessing, vk) = vk;
         let mut transcript = Keccak256Transcript::from_proof(proof);
 
         let ct0is_claim = {
-            let point = transcript.squeeze_challenges(self.log2_size() + self.block.num_reps - 1);
+            let point = transcript.squeeze_challenges(self.ct0is_log2_size());
             let ct0is = box_dense_poly(
                 ct0is
                     .into_iter()
+                    .take(self.block.num_reps)
                     .flat_map(|ct0i| {
                         let ct0i = Poly::<F>::new_shifted(ct0i, 1 << self.log2_size());
                         let mut ct0i = ct0i.as_ref()[1..].to_vec();
@@ -717,59 +781,60 @@ impl BfvEncrypt {
             EvalClaim::new(point, value)
         };
 
-        let mut output_claims = vec![EvalClaim::new(vec![], F::ZERO); 3 + self.block.num_reps]; // should be self.block.num_reps * 2 (for r2is range checks)
-        output_claims.push(ct0is_claim);
+        // let mut output_claims = vec![EvalClaim::new(vec![], F::ZERO); 4 + self.block.num_reps]; // should be self.block.num_reps * 2 (for r2is range checks)
+        // output_claims.push(ct0is_claim);
+        let output_claims = vec![ct0is_claim];
 
         let circuit = {
             let mut circuit = Circuit::<F, F>::default();
-            self.configure(&mut circuit);
+            self.configure(&mut circuit, preprocessing);
             circuit
         };
 
         let input_claims = info_span!("GKR verify")
             .in_scope(|| verify_gkr(&circuit, &output_claims, &mut transcript).unwrap());
 
-        info_span!("LogUp IOP verify").in_scope(|| {
-            PCS::verify(
-                &vk[0].1,
-                vk[0].0,
-                &input_claims[4][0].point().to_vec(),
-                &input_claims[4][0].value(),
-                &mut transcript,
-            )
-            .expect("failed to verify `s` lookup table commitment");
+        // info_span!("LogUp IOP verify").in_scope(|| {
+        //     Pcs::verify(
+        //         &vk[0].1,
+        //         &vk[0].0,
+        //         &input_claims[4][0].point().to_vec(),
+        //         &input_claims[4][0].value(),
+        //         &mut transcript,
+        //     )
+        //     .expect("failed to verify `s` lookup table commitment");
 
-            PCS::verify(
-                &vk[1].1,
-                vk[1].0,
-                &input_claims[6][0].point().to_vec(),
-                &input_claims[6][0].value(),
-                &mut transcript,
-            )
-            .expect("failed to verify `e` lookup table commitment");
+        //     Pcs::verify(
+        //         &vk[1].1,
+        //         &vk[1].0,
+        //         &input_claims[6][0].point().to_vec(),
+        //         &input_claims[6][0].value(),
+        //         &mut transcript,
+        //     )
+        //     .expect("failed to verify `e` lookup table commitment");
 
-            PCS::verify(
-                &vk[2].1,
-                vk[2].0,
-                &input_claims[8][0].point().to_vec(),
-                &input_claims[8][0].value(),
-                &mut transcript,
-            )
-            .expect("failed to verify `k1` lookup table commitment");
+        //     Pcs::verify(
+        //         &vk[2].1,
+        //         &vk[2].0,
+        //         &input_claims[8][0].point().to_vec(),
+        //         &input_claims[8][0].value(),
+        //         &mut transcript,
+        //     )
+        //     .expect("failed to verify `k1` lookup table commitment");
 
-            (0..self.block.num_reps).for_each(|i| {
-                let t_idx = 14 + 2 * i;
+        //     (0..self.block.num_reps).for_each(|i| {
+        //         let t_idx = 14 + 2 * i;
 
-                PCS::verify(
-                    &vk[3 + i].1,
-                    vk[3 + i].0,
-                    &input_claims[t_idx][0].point().to_vec(),
-                    &input_claims[t_idx][0].value(),
-                    &mut transcript,
-                )
-                .expect("failed to verify `r1i` lookup table commitment");
-            });
-        });
+        //         Pcs::verify(
+        //             &vk[3 + i].1,
+        //             &vk[3 + i].0,
+        //             &input_claims[t_idx][0].point().to_vec(),
+        //             &input_claims[t_idx][0].value(),
+        //             &mut transcript,
+        //         )
+        //         .expect("failed to verify `r1i` lookup table commitment");
+        //     });
+        // });
 
         // izip_eq!(circuit.inputs(), input_claims).for_each(|(input, claims)| {
         //     claims
@@ -777,20 +842,11 @@ impl BfvEncrypt {
         //         .for_each(|claim| assert_eq!(values[input].evaluate(claim.point()), claim.value()))
         // });
     }
-}
 
-pub fn bfv_encrypt_circuit<F: PrimeField + From<u64>, E: ExtensionField<F>>(
-    bfv: BfvEncrypt,
-    args: BfvSkEncryptArgs,
-) -> (Circuit<F, E>, Vec<BoxMultilinearPoly<'static, F, E>>) {
-    let circuit = {
-        let mut circuit = Circuit::default();
-        bfv.configure(&mut circuit);
-        circuit
-    };
-    let values = bfv.gen_values(&args);
-
-    (circuit, values)
+    fn ct0is_log2_size(&self) -> usize {
+        assert!(self.block.num_reps.is_power_of_two());
+        self.log2_size() + self.block.num_reps.next_power_of_two().ilog2() as usize
+    }
 }
 
 fn root_of_unity<F: PrimeField>(k: usize) -> F {
@@ -817,13 +873,15 @@ fn relay_mul_const<F>(w: (usize, usize), c: F) -> VanillaGate<F> {
 mod test {
     use super::*;
     use gkr::util::dev::seeded_std_rng;
+    use goldilocks::Goldilocks;
     use halo2_curves::bn256;
     use std::{fs::File, io::Read};
     use tracing::{info_span, level_filters::LevelFilter};
     use tracing_forest::ForestLayer;
     use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Registry};
 
-    type Field = bn256::Fr;
+    // type Field = bn256::Fr;
+    type Field = Goldilocks;
 
     #[test]
     pub fn test_sk_enc_valid() {
@@ -838,25 +896,24 @@ mod test {
 
         let rng = seeded_std_rng();
 
-        let file_path = "src/data/sk_enc_1024_4x55_65537.json";
+        // println!(
+        //     "r2i_bound_log2_size {}",
+        //     BfvEncryptBlock::r2i_bound_log2_size()
+        // );
+
+        let file_path = "src/data/sk_enc_1024_2x55_65537.json";
         let mut file = File::open(file_path).unwrap();
         let mut data = String::new();
         file.read_to_string(&mut data).unwrap();
-        let bfv = BfvEncrypt::new(2);
+        let bfv = BfvEncrypt::<10>::new(2);
         let args = serde_json::from_str::<BfvSkEncryptArgs>(&data).unwrap();
 
-        // let (circuit, values) = bfv_encrypt_circuit::<Goldilocks, GoldilocksExt2>(bfv, args);
-        // // let values = circuit.evaluate(expected_values);
-        // // assert_polys_eq(&values, &expected_values);
-        // run_gkr_with_values(&circuit, &values, &mut rng);
-        let (comms, pks, vks) = info_span!("commit to lookup tables")
-            .in_scope(|| bfv.setup::<Field, Brakedown<Field>>(rng.clone()));
-        let pk = izip!(&comms, pks).collect_vec();
-        let vk = izip!(&comms, vks).collect_vec();
+        let (pk, vk) = info_span!("setup")
+            .in_scope(|| bfv.setup::<Field, Field, Brakedown<Field>>(rng.clone()));
         let proof = info_span!("FHE_enc prove")
-            .in_scope(|| bfv.prove::<Field, Brakedown<Field>>(&args, &pk));
+            .in_scope(|| bfv.prove::<Field, Brakedown<Field>>(&args, pk));
 
         info_span!("FHE_enc verify")
-            .in_scope(|| bfv.verify::<Field, Brakedown<Field>>(&vk, &proof, args.ct0is));
+            .in_scope(|| bfv.verify::<Field, Brakedown<Field>>(vk, &proof, args.ct0is));
     }
 }

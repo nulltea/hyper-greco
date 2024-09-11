@@ -46,8 +46,8 @@ def main(args):
     k1.reduce_coefficients_by_modulus(t)
 
     # `p` is the modulus of the prime field of the circuit
-    # p = 18446744069414584321
-    p = 21888242871839275222246405745257275088548364400416034343698204186575808495617
+    p = 18446744069414584321
+    # p = 21888242871839275222246405745257275088548364400416034343698204186575808495617
 
     # `r2is` are the polynomials r2i for each i-th CRT basis.
     r2is = []

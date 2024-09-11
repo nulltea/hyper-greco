@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 rand = "0.8.5"
 serde = { version = "=1.0", default-features = false, features = ["derive"] }
-serde_json = { version = "1.0", default-features = false }
+serde_json = { version = "1.0", default-features = false, features = ["std"] }
 itertools = "0.11"
 prettytable = "0.10.0"
 gkr = { git = "https://github.com/han0110/gkr" }
@@ -17,12 +17,19 @@ tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.17", features = ["std", "env-filter"] }
 tracing-forest = { version = "0.1.6", features = ["ansi", "smallvec"] }
 plonkish_backend = { git = "https://github.com/han0110/plonkish" }
+strum = "0.26.0"
+strum_macros = "0.26.4"
+enum_dispatch = "0.3.12"
+ark-std = { version = "0.4.0" }
+fixedbitset = "0.5"
 
 [dev-dependencies]
 gkr = { git = "https://github.com/han0110/gkr", features = ["dev"] }
 criterion = "0.5.1"
 goldilocks = { git = "https://github.com/han0110/goldilocks", branch = "feature/qe_op_b" }
-halo2_curves = { version = "0.7.0", package = "halo2curves", features = ["derive_serde"] }
+halo2_curves = { version = "0.7.0", package = "halo2curves", features = [
+    "derive_serde",
+] }
 blake3 = { version = "1", features = ["traits-preview"] }
 
 
@@ -61,5 +68,5 @@ incremental = false
 [patch."https://github.com/han0110/gkr"]
 gkr = { path = "../examples/gkr/gkr" }
 
-# [patch."https://github.com/han0110/plonkish"]
-# plonkish_backend = { path = "../plonkish/plonkish_backend" }
+[patch."https://github.com/han0110/plonkish"]
+plonkish_backend = { git = "https://github.com/DoHoonKim8/halo2-lasso", branch = "feature/Lasso" }

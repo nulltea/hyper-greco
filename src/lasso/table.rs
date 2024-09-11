@@ -11,7 +11,7 @@ use gkr::{
 
 pub mod range;
 use range::*;
-use crate::sk_encryption_circuit::{RangeLookups, RangeSubtables};
+use crate::sk_encryption_circuit::{RangeLookups, RangeSubtables, BfvEncryptBlock};
 
 pub type SubtableId = TypeId;
 pub type LookupId = TypeId;
