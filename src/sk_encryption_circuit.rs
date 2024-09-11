@@ -1,25 +1,32 @@
-use crate::constants::sk_enc_constants_1024_2x55_65537::{
+use crate::constants::sk_enc_constants_1024_4x55_65537::{
     E_BOUND, K0IS, K1_BOUND, N, QIS, R1_BOUNDS, R2_BOUNDS,
 };
-use crate::poly::Poly;
-use crate::transcript::Keccak256Transcript;
-use gkr::circuit::node::EvalClaim;
-use gkr::util::arithmetic::radix2_fft;
-use gkr::verify_gkr;
+use crate::lasso::CircuitLookups;
+use crate::subtable_enum;
+use crate::{
+    lasso::{
+        table::range::{FullLimbSubtable, RangeStategy, RangeTable, ReminderSubtable},
+        LassoNode, LassoSubtable, LookupType, SubtableId, SubtableSet,
+    },
+    poly::Poly,
+    transcript::Keccak256Transcript,
+};
+use enum_dispatch::enum_dispatch;
 use gkr::{
     chain_par,
     circuit::{
         connect,
-        node::{FftNode, InputNode, LogUpNode, VanillaGate, VanillaNode},
+        node::{EvalClaim, FftNode, InputNode, LogUpNode, VanillaGate, VanillaNode},
         Circuit, NodeId,
     },
     ff_ext::ff::PrimeField,
     poly::{box_dense_poly, BoxMultilinearPoly},
     transcript::Transcript,
     util::{
-        arithmetic::{squares, ExtensionField},
+        arithmetic::{radix2_fft, squares, ExtensionField},
         izip, Itertools,
     },
+    verify_gkr,
 };
 use itertools::chain;
 use plonkish_backend::pcs::multilinear::MultilinearBrakedown;
@@ -30,12 +37,28 @@ use plonkish_backend::util::hash::{Keccak256, Output};
 use rand::RngCore;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use serde::Deserialize;
+use std::any::TypeId;
 use std::cmp::min;
 use std::iter;
+use strum_macros::{EnumCount, EnumIter};
 use tracing::info_span;
 
 const E_BOUND_LEN: usize = (2 * E_BOUND + 1).next_power_of_two().ilog2() as usize;
 const K1_BOUND_LEN: usize = (2 * K1_BOUND + 1).next_power_of_two().ilog2() as usize;
+
+subtable_enum!(
+    RangeSubtables,
+    Full: FullLimbSubtable<F, E>
+);
+
+#[derive(Copy, Clone, Debug, EnumCount, EnumIter)]
+#[enum_dispatch(LookupType)]
+pub enum RangeLookups {
+    // Range32(RangeStategy<32>),
+    Range45(RangeStategy<45>),
+    RangeTest(RangeStategy<55>),
+}
+impl CircuitLookups for RangeLookups {}
 
 pub type Brakedown<F> =
     MultilinearBrakedown<F, plonkish_backend::util::hash::Keccak256, BrakedownSpec6>;
@@ -160,7 +183,8 @@ impl BfvEncryptBlock {
 
         // let r2is_m = circuit.insert(InputNode::new(self.r2i_bound_log2_size(), 1));
         // let r2is_t = circuit.insert(InputNode::new(self.r2i_bound_log2_size(), 1));
-        // let r2is_range = circuit.insert(LogUpNode::new(self.r2i_bound_log2_size(), log2_size + self.num_reps - 1, 1));
+        // let range_table = Box::new(RangeTable::<F, 22, 8>::new());
+        // let r2is_range = circuit.insert(LassoNode::new(range_table, self.r2i_bound_log2_size()));
 
         let s_eval = circuit.insert(FftNode::forward(log2_size));
         circuit.connect(s, s_eval);
@@ -814,7 +838,7 @@ mod test {
 
         let rng = seeded_std_rng();
 
-        let file_path = "src/data/sk_enc_1024_2x55_65537.json";
+        let file_path = "src/data/sk_enc_1024_4x55_65537.json";
         let mut file = File::open(file_path).unwrap();
         let mut data = String::new();
         file.read_to_string(&mut data).unwrap();
