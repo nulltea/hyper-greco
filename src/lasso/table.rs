@@ -28,8 +28,8 @@ pub trait LassoSubtable<F: PrimeField, E: ExtensionField<F>>: 'static + Sync + D
     /// Fully materializes a subtable of size `M`, reprensented as a Vec of length `M`.
     fn materialize(&self, M: usize) -> Vec<F>;
 
-    // fn evaluate_mle(&self, point: &[E]) -> E;
-
+    fn evaluate_mle(&self, point: &[E], M: usize) -> E;
+    
     /// Expression to evaluate the multilinear extension polynomial for this subtable at the given `point`,
     /// interpreted to be of size log_2(M), where M is the size of the subtable.
     fn evaluate_mle_expr(&self, log2_M: usize) -> MultilinearPolyTerms<F>;

@@ -5,7 +5,7 @@ use crate::lasso::{CircuitLookups, LassoPreprocessing};
 use crate::subtable_enum;
 use crate::{
     lasso::{
-        table::range::{FullLimbSubtable, RangeStategy, RangeTable, ReminderSubtable},
+        table::range::{FullLimbSubtable, RangeStategy, ReminderSubtable},
         LassoNode, LassoSubtable, LookupType, SubtableId, SubtableSet,
     },
     poly::Poly,
@@ -217,19 +217,19 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncryptBlock<POLY_LOG2_SIZE> {
         // let r2is_m = circuit.insert(InputNode::new(self.r2i_bound_log2_size(), 1));
         // let r2is_t = circuit.insert(InputNode::new(self.r2i_bound_log2_size(), 1));
         // let range_table = Box::new(RangeTable::<F, 22, 8>::new());
-        // let r2is_range = {
-        //     let num_vars = poly_log2_size + self.num_reps - 1;
-        //     circuit.insert(LassoNode::<F, E, RangeLookups, C, M>::new(
-        //         preprocessing,
-        //         num_vars,
-        //         chain![iter::repeat(RangeLookups::RangeR2i(
-        //             RangeStategy::<{ Self::r2i_bound_log2_size() }>
-        //         ))
-        //         .take(1 << num_vars),]
-        //         .collect_vec(),
-        //     ))
-        // };
-        // circuit.connect(r2is, r2is_range);
+        let r2is_range = {
+            let num_vars = poly_log2_size + self.num_reps - 1;
+            circuit.insert(LassoNode::<F, E, RangeLookups, C, M>::new(
+                preprocessing,
+                num_vars,
+                chain![iter::repeat(RangeLookups::RangeR2i(
+                    RangeStategy::<64>
+                ))
+                .take(1 << num_vars),]
+                .collect_vec(),
+            ))
+        };
+        circuit.connect(r2is, r2is_range);
 
         let s_eval = circuit.insert(FftNode::forward(log2_size));
         circuit.connect(s, s_eval);
@@ -643,8 +643,8 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
             r1is,
             // r1i_range_values, // r1i_range
             [r1iqis],
-            // [r2is, vec![F::ZERO]],
-            [r2is],
+            [r2is, vec![F::ZERO]],
+            // [r2is],
             // [r2is_m, r2is_t, vec![F::ZERO]] // r2is_range
             [s_eval.clone()],
             [s_eval],
@@ -685,9 +685,8 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
             EvalClaim::new(point.clone(), value)
         };
 
-        // let mut output_claims = vec![EvalClaim::new(vec![], F::ZERO); 4 + self.block.num_reps]; // should be self.block.num_reps * 2 (for r2is range checks)
-        // output_claims.push(ct0is_claim);
-        let output_claims = vec![ct0is_claim];
+        let mut output_claims = vec![EvalClaim::new(vec![], F::ZERO); 1]; // 4 + self.block.num_reps// should be self.block.num_reps * 2 (for r2is range checks)
+        output_claims.push(ct0is_claim);
 
 
         let claims = info_span!("GKR prove")
@@ -781,9 +780,9 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
             EvalClaim::new(point, value)
         };
 
-        // let mut output_claims = vec![EvalClaim::new(vec![], F::ZERO); 4 + self.block.num_reps]; // should be self.block.num_reps * 2 (for r2is range checks)
-        // output_claims.push(ct0is_claim);
-        let output_claims = vec![ct0is_claim];
+        let mut output_claims = vec![EvalClaim::new(vec![], F::ZERO); 1]; // 4 + self.block.num_reps // should be self.block.num_reps * 2 (for r2is range checks)
+        output_claims.push(ct0is_claim);
+        // let output_claims = vec![ct0is_claim];
 
         let circuit = {
             let mut circuit = Circuit::<F, F>::default();
