@@ -11,7 +11,7 @@ use gkr::{
 
 pub mod range;
 use range::*;
-use crate::sk_encryption_circuit::{RangeLookups, RangeSubtables, BfvEncryptBlock};
+use crate::sk_encryption_circuit::{RangeLookups, RangeSubtables, BfvEncryptBlock, R2_BOUND_ABS};
 
 pub type SubtableId = TypeId;
 pub type LookupId = TypeId;
@@ -29,7 +29,7 @@ pub trait LassoSubtable<F: PrimeField, E: ExtensionField<F>>: 'static + Sync + D
     fn materialize(&self, M: usize) -> Vec<F>;
 
     fn evaluate_mle(&self, point: &[E], M: usize) -> E;
-    
+
     /// Expression to evaluate the multilinear extension polynomial for this subtable at the given `point`,
     /// interpreted to be of size log_2(M), where M is the size of the subtable.
     fn evaluate_mle_expr(&self, log2_M: usize) -> MultilinearPolyTerms<F>;
@@ -84,7 +84,7 @@ pub trait LookupType: Clone + Send + Sync {
 
     fn output<F: PrimeField>(&self, index: &F) -> F;
 
-    fn chunk_bits(&self, log_M: usize) -> Vec<usize>;
+    fn chunk_bits(&self, M: usize) -> Vec<usize>;
 
     /// Returns the indices of each subtable lookups
     /// The length of `index_bits` is same as actual bit length of table index

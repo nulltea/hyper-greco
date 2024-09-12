@@ -5,8 +5,8 @@ use crate::lasso::{CircuitLookups, LassoPreprocessing};
 use crate::subtable_enum;
 use crate::{
     lasso::{
-        table::range::{FullLimbSubtable, RangeStategy, ReminderSubtable},
-        LassoNode, LassoSubtable, LookupType, SubtableId, SubtableSet,
+        table::range::{BoundSubtable, FullLimbSubtable, RangeLookup},
+        LassoNode, SubtableId, SubtableSet,
     },
     poly::Poly,
     transcript::Keccak256Transcript,
@@ -16,7 +16,7 @@ use gkr::{
     chain_par,
     circuit::{
         connect,
-        node::{EvalClaim, FftNode, InputNode, LogUpNode, VanillaGate, VanillaNode},
+        node::{EvalClaim, FftNode, InputNode, VanillaGate, VanillaNode},
         Circuit, NodeId,
     },
     ff_ext::ff::PrimeField,
@@ -40,12 +40,13 @@ use serde::Deserialize;
 use std::any::TypeId;
 use std::cmp::min;
 use std::iter;
-use std::marker::PhantomData;
 use strum_macros::{EnumCount, EnumIter};
 use tracing::info_span;
 
 const E_BOUND_LEN: usize = (2 * E_BOUND + 1).next_power_of_two().ilog2() as usize;
 const K1_BOUND_LEN: usize = (2 * K1_BOUND + 1).next_power_of_two().ilog2() as usize;
+pub const R2_BOUND: u64 = R2_BOUNDS[0];
+pub const R2_BOUND_ABS: u64 = (2 * R2_BOUNDS[0]) + 1;
 
 const LIMB_BITS: usize = 16;
 const C: usize = 8;
@@ -54,14 +55,14 @@ const M: usize = 1 << LIMB_BITS;
 subtable_enum!(
     RangeSubtables,
     Full: FullLimbSubtable<F, E>,
-    ReminderR2i: ReminderSubtable<F, E, { BfvEncryptBlock::<13>::r2i_bound_log2_size() }>
+    R2iBound: BoundSubtable<F, E, R2_BOUND_ABS>
 );
 
 #[derive(Copy, Clone, Debug, EnumCount, EnumIter)]
 #[enum_dispatch(LookupType)]
 pub enum RangeLookups {
     // Range32(RangeStategy<32>),
-    RangeR2i(RangeStategy<{ BfvEncryptBlock::<13>::r2i_bound_log2_size() }>),
+    RangeR2i(RangeLookup<R2_BOUND_ABS>),
     // RangeTest(RangeStategy<55>),
 }
 impl CircuitLookups for RangeLookups {}
@@ -94,7 +95,6 @@ pub type VerifierKey<
     LassoPreprocessing<F, E>,
     Vec<(Pcs::Commitment, Pcs::VerifierParam)>,
 );
-
 
 /// `BfvSkEncryptionCircuit` is a circuit that checks the correct formation of a ciphertext resulting from BFV secret key encryption
 /// All the polynomials coefficients and scalars are normalized to be in the range `[0, p)` where p is the modulus of the prime field of the circuit
@@ -200,8 +200,9 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncryptBlock<POLY_LOG2_SIZE> {
             let r1i_size = 1usize << log2_size;
             let gates = (0..self.num_reps)
                 .flat_map(|i| {
-                    (0..r1i_size)
-                        .map(move |j| relay_mul_const((i, j), F::from_str_vartime(QIS[i]).unwrap()))
+                    (0..r1i_size).map(move |j| {
+                        relay_mul_const((i, j), F::from_str_vartime(QIS[i]).unwrap())
+                    })
                 })
                 .collect_vec();
 
@@ -214,22 +215,29 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncryptBlock<POLY_LOG2_SIZE> {
 
         let r2is = circuit.insert(InputNode::new(poly_log2_size, self.num_reps));
 
-        // let r2is_m = circuit.insert(InputNode::new(self.r2i_bound_log2_size(), 1));
-        // let r2is_t = circuit.insert(InputNode::new(self.r2i_bound_log2_size(), 1));
-        // let range_table = Box::new(RangeTable::<F, 22, 8>::new());
+        let r2is_shifted = {
+            let gates = (0..(1usize << poly_log2_size)) // optimize with num reps?
+                .map(move |j| relay_add_const((0, j), F::from(R2_BOUND)))
+                .collect_vec();
+
+            circuit.insert(VanillaNode::new(1, poly_log2_size, gates, 1))
+        };
         let r2is_range = {
             let num_vars = poly_log2_size + self.num_reps - 1;
             circuit.insert(LassoNode::<F, E, RangeLookups, C, M>::new(
                 preprocessing,
                 num_vars,
-                chain![iter::repeat(RangeLookups::RangeR2i(
-                    RangeStategy::<64>
-                ))
-                .take(1 << num_vars),]
+                chain![
+                    iter::repeat(RangeLookups::RangeR2i(RangeLookup::<R2_BOUND_ABS>))
+                        .take(1 << num_vars),
+                ]
                 .collect_vec(),
             ))
         };
-        circuit.connect(r2is, r2is_range);
+        connect!(circuit {
+            r2is_shifted <- r2is;
+            r2is_range <- r2is_shifted;
+        });
 
         let s_eval = circuit.insert(FftNode::forward(log2_size));
         circuit.connect(s, s_eval);
@@ -438,7 +446,7 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
     pub fn gen_values<F: PrimeField, E: ExtensionField<F>>(
         &self,
         args: &BfvSkEncryptArgs,
-    ) -> Vec<BoxMultilinearPoly<'static, F, E>> {
+    ) -> Vec<BoxMultilinearPoly<'static, F, E>> where F::Repr: Into<u64>{
         let log2_size = self.log2_size();
 
         let s = Poly::<F>::new_padded(args.s.clone(), log2_size);
@@ -554,6 +562,11 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
             })
             .collect_vec();
 
+        let r2is_shifted = r2is
+            .iter()
+            .map(|&r2i| r2i + F::from(R2_BOUND))
+            .collect_vec();
+
         let (s_t, s_m) = {
             let t = [F::ZERO, F::ONE, F::ZERO - F::ONE, F::ZERO];
             let mut m = [F::ZERO; 4];
@@ -643,7 +656,7 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
             r1is,
             // r1i_range_values, // r1i_range
             [r1iqis],
-            [r2is, vec![F::ZERO]],
+            [r2is, r2is_shifted, vec![F::ZERO]],
             // [r2is],
             // [r2is_m, r2is_t, vec![F::ZERO]] // r2is_range
             [s_eval.clone()],
@@ -668,7 +681,7 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
         &self,
         args: &BfvSkEncryptArgs,
         pk: ProverKey<F, F, Pcs>,
-    ) -> Vec<u8> {
+    ) -> Vec<u8> where F::Repr: Into<u64> {
         let (preprocessing, pk) = pk;
         let mut transcript = Keccak256Transcript::<Vec<u8>>::default();
 
@@ -687,7 +700,6 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
 
         let mut output_claims = vec![EvalClaim::new(vec![], F::ZERO); 1]; // 4 + self.block.num_reps// should be self.block.num_reps * 2 (for r2is range checks)
         output_claims.push(ct0is_claim);
-
 
         let claims = info_span!("GKR prove")
             .in_scope(|| gkr::prove_gkr(&circuit, &values, &output_claims, &mut transcript))
@@ -868,12 +880,16 @@ fn relay_mul_const<F>(w: (usize, usize), c: F) -> VanillaGate<F> {
     VanillaGate::new(None, vec![(Some(c), w)], Vec::new())
 }
 
+fn relay_add_const<F>(w: (usize, usize), c: F) -> VanillaGate<F> {
+    VanillaGate::new(Some(c), vec![(None, w)], Vec::new())
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
     use gkr::util::dev::seeded_std_rng;
     use goldilocks::Goldilocks;
-    use halo2_curves::bn256;
+
     use std::{fs::File, io::Read};
     use tracing::{info_span, level_filters::LevelFilter};
     use tracing_forest::ForestLayer;
@@ -904,7 +920,7 @@ mod test {
         let mut file = File::open(file_path).unwrap();
         let mut data = String::new();
         file.read_to_string(&mut data).unwrap();
-        let bfv = BfvEncrypt::<10>::new(2);
+        let bfv = BfvEncrypt::<10>::new(1);
         let args = serde_json::from_str::<BfvSkEncryptArgs>(&data).unwrap();
 
         let (pk, vk) = info_span!("setup")

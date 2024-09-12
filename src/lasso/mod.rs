@@ -30,6 +30,8 @@ pub use table::{
     CircuitLookups, LassoSubtable, LookupType, SubtableId, SubtableIndices, SubtableSet,
 };
 
+use crate::sk_encryption_circuit::R2_BOUND_ABS;
+
 pub mod memory_checking;
 pub mod table;
 
@@ -428,8 +430,11 @@ impl<
 
         let indices = izip!((0..num_rows), &self.lookups)
             .map(|(i, lookup)| {
+                println!("inputs[i]: {:?}", inputs[i]);
+                println!("chunk_bits: {:?}", lookup.chunk_bits(M));
+                println!("inputs[i] > {R2_BOUND_ABS}: {:?}", 13712101976447600 > R2_BOUND_ABS);
                 let mut index_bits = fe_to_bits_le(inputs[i]);
-                index_bits.truncate(lookup.chunk_bits(log2(M) as usize).iter().sum());
+                index_bits.truncate(lookup.chunk_bits(M).iter().sum());
                 // index_bits.truncate()
                 // TODO: put behind a feature flag
                 assert_eq!(
