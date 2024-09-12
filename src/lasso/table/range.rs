@@ -1,3 +1,4 @@
+use core::num;
 use gkr::{
     ff_ext::{ff::PrimeField, ExtensionField},
     poly::{MultilinearPolyTerms, PolyExpr},
@@ -52,7 +53,6 @@ impl<F: PrimeField, E: ExtensionField<F>, const NUM_BITS: usize> LassoSubtable<F
 {
     fn materialize(&self, M: usize) -> Vec<F> {
         let cutoff = 1 << (NUM_BITS % M.ilog2() as usize);
-        println!("cutoff: {}", cutoff);
 
         (0..M)
             .map(|i| {
@@ -123,12 +123,8 @@ impl<F: PrimeField, E: ExtensionField<F>, const BOUND: usize> LassoSubtable<F, E
         let bound_bits = BOUND.ilog2() as usize;
         let reminder = 1 << (bound_bits % M.ilog2() as usize);
         let cutoff = reminder + BOUND % M;
-        println!("cutoff: {reminder} + {} = {}", BOUND % M, cutoff);
 
-        // let bound_bits = BOUND.ilog2() as usize;
-        // let rem_bits = log2_M + bound_bits % log2_M;
-
-        (0..cutoff.next_power_of_two())
+        (0..M)
             .map(|i| {
                 if i < cutoff {
                     F::from(i as u64)
@@ -140,36 +136,43 @@ impl<F: PrimeField, E: ExtensionField<F>, const BOUND: usize> LassoSubtable<F, E
     }
 
     fn evaluate_mle(&self, point: &[E], M: usize) -> E {
-        let log2_M= M.ilog2() as usize;
+        let log2_M = M.ilog2() as usize;
         let b = point.len();
 
         let bound_bits = BOUND.ilog2() as usize;
         let reminder = 1 << (bound_bits % log2_M);
         let cutoff = reminder + BOUND % (1 << log2_M);
         let cutoff_log2 = cutoff.ilog2() as usize;
-    
-        let mut result = E::ZERO;
-        for i in 0..cutoff_log2 {
-            result += point[i] * F::from(1u64 << (i));
-        }
-    
+
         let g_base = 1 << cutoff_log2;
         let num_extra = cutoff - g_base;
-        let mut g_value = E::ZERO;
-    
-        for i in 0..num_extra {
-            let mut term = E::from_bases(&[F::from((g_base + i) as u64)]);
-            for j in 0..b - 1 {
-                if (i & (1 << j)) != 0 {
-                    term *= point[j];
-                } else {
-                    term *= E::ONE - point[j];
+
+        let mut result = E::ZERO;
+        for i in 0..b {
+            if i < cutoff_log2 {
+                result += point[i] * F::from(1u64 << (i));
+            } else {
+                let mut g_value = E::ZERO;
+
+                if i == cutoff_log2 {
+                    for k in 0..num_extra {
+                        let mut term = E::from_bases(&[F::from((g_base + k) as u64)]);
+                        for j in 0..cutoff_log2 {
+                            if (k & (1 << j)) != 0 {
+                                term *= point[j];
+                            } else {
+                                term *= E::ONE - point[j];
+                            }
+                        }
+                        g_value += term;
+                    }
                 }
+
+                result = (E::ONE - point[i]) * result + point[i] * g_value
             }
-            g_value += term;
         }
-    
-        (E::ONE - point[b - 1]) * result + point[b - 1] * g_value
+
+        result
     }
 
     fn evaluate_mle_expr(&self, log2_M: usize) -> MultilinearPolyTerms<F> {
@@ -180,34 +183,45 @@ impl<F: PrimeField, E: ExtensionField<F>, const BOUND: usize> LassoSubtable<F, E
         let cutoff_log2 = cutoff.ilog2() as usize;
 
         let rem_init = PolyExpr::Var(0);
-        let mut rem_terms = vec![rem_init];
+        let mut terms = vec![rem_init];
         (1..cutoff_log2).for_each(|i| {
             let coeff = PolyExpr::Pow(Box::new(PolyExpr::Const(F::from(2))), i as u32);
             let x = PolyExpr::Var(i);
             let term = PolyExpr::Prod(vec![coeff, x]);
-            rem_terms.push(term);
+            terms.push(term);
         });
+
+        let mut result = PolyExpr::Sum(terms);
 
         let g_base = 1 << cutoff_log2;
         let num_extra = cutoff - g_base;
 
-        // let mut other_terms = vec![];
+        (cutoff_log2..log2_M).for_each(|i| {
+            if num_extra > 0 && i == cutoff_log2 {
+                let mut g_value = PolyExpr::ZERO;
+                for k in 0..num_extra {
+                    let mut term = PolyExpr::u64((g_base + k) as u64);
+                    for j in 0..cutoff_log2 {
+                        if (k & (1 << j)) != 0 {
+                            term = PolyExpr::mul(term, PolyExpr::Var(j));
+                        } else {
+                            let t = PolyExpr::sub(PolyExpr::Const(F::ONE), PolyExpr::Var(j));
+                            term = PolyExpr::mul(term, t);
+                        }
+                    }
+                    g_value = PolyExpr::add(term, g_value);
+                }
+                let x = PolyExpr::Var(i);
+                let left = PolyExpr::mul(PolyExpr::sub(PolyExpr::ONE, x.clone()), result.clone());
+                let right = PolyExpr::mul(x, g_value);
+                result = PolyExpr::add(left, right);
+            } else {
+                let term = PolyExpr::sub(PolyExpr::ONE, PolyExpr::Var(i));
+                result = PolyExpr::mul(result.clone(), term);
+            }
+        });
 
-        // // (rem_bits..log2_M).for_each(|i| {
-        // //     let x = PolyExpr::Var(i);
-        // //     let x_neg = PolyExpr::Prod(vec![PolyExpr::Const(F::ZERO - F::ONE), x]);
-        // //     let term = PolyExpr::Sum(vec![PolyExpr::Const(F::ONE), x_neg]);
-        // //     other_terms.push(term);
-        // // });
-        // MultilinearPolyTerms::new(
-        //     rem_bits,
-        //     PolyExpr::Sum(vec![
-        //         PolyExpr::Prod([vec![PolyExpr::Sum(rem_terms)], other_terms].concat()),
-        //         PolyExpr::Const(F::from(cutoff as u64)),
-        //     ]),
-        // )
-
-        todo!()
+        MultilinearPolyTerms::new(log2_M, result)
     }
 }
 
@@ -343,7 +357,6 @@ mod test {
 
         let s = BoundSubtable::<F, F, BOUND>::new();
         let evals = s.materialize(M);
-        println!("evals: {:?}", evals);
 
         let poly = box_dense_poly::<F, F, _>(evals);
         let num_vars = poly.num_vars();
@@ -353,7 +366,8 @@ mod test {
             .collect::<Vec<_>>();
 
         let eval1 = poly.evaluate(&r);
-        let eval2 = s.evaluate_mle(&r, M);
+        // let eval2 = s.evaluate_mle(&r, M);
+        let eval2 = s.evaluate_mle_expr(log2_M).evaluate(&r);
 
         assert_eq!(eval1, eval2);
     }
