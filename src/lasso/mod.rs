@@ -29,6 +29,7 @@ use std::{collections::HashMap, iter, marker::PhantomData};
 pub use table::{
     CircuitLookups, LassoSubtable, LookupType, SubtableId, SubtableIndices, SubtableSet,
 };
+use tracing::info_span;
 
 use crate::sk_encryption_circuit::R2_BOUND_ABS;
 
@@ -94,12 +95,12 @@ impl<
             lookup_flag_bitvectors,
         } = polys;
 
-        assert_eq!(inputs[0].to_dense(), lookup_outputs.to_dense());
+        assert!(inputs[0].to_dense() == lookup_outputs.to_dense());
 
         // let [e_polys, dims, read_ts_polys, final_cts_polys] = polys;
 
         let num_vars = lookup_outputs.num_vars();
-        assert!(num_vars == self.num_vars);
+        assert_eq!(num_vars, self.num_vars);
 
         assert_eq!(final_cts_polys[0].num_vars(), log2(M) as usize);
 
@@ -148,7 +149,8 @@ impl<
         let g = self.collation_sum_check_function(&mock_lookup, num_vars);
         let claimed_sum = transcript.read_felt_ext()?;
 
-        let (sub_claim, r_x_prime) = verify_sum_check(&g, claimed_sum, transcript)?;
+        let (sub_claim, r_x_prime) = info_span!("LassoNode::verify_collation_sum_check")
+            .in_scope(|| verify_sum_check(&g, claimed_sum, transcript))?;
 
         // let e_polys_eval = transcript.read_felt_exts(table.num_memories())?;
 
@@ -203,7 +205,6 @@ impl<
 
         let polys: Vec<_> = (0..self.preprocessing.num_memories)
             .into_par_iter()
-            // .into_iter()
             .map(|memory_index| {
                 let dim_index = self.preprocessing.memory_to_dimension_index[memory_index];
                 let subtable_index = self.preprocessing.memory_to_subtable_index[memory_index];
@@ -249,11 +250,15 @@ impl<
             },
         );
 
-        let dims: Vec<_> = (0..C)
+        println!("read_cts: {:?}", read_cts.iter().map(|e| e.len()).collect_vec());
+
+        let dims: Vec<_> = subtable_lookup_indices
             .into_par_iter()
-            .map(|i| {
-                let access_sequence: &Vec<usize> = &subtable_lookup_indices[i];
-                DensePolynomial::from_usize(access_sequence)
+            .take(C)
+            .map(|mut access_sequence| {
+                access_sequence.resize(access_sequence.len().next_power_of_two(), 0);
+                println!("access_sequence: {:?}", access_sequence.len());
+                DensePolynomial::from_usize(&access_sequence)
             })
             .collect();
 
@@ -273,6 +278,8 @@ impl<
         //     inputs.iter().map(|e| (e.num_vars(), e.len())).collect_vec()
         // );
         let mut lookup_outputs = self.compute_lookup_outputs(inputs);
+        println!("lookup_inputs: {:?}", inputs.len());
+        println!("lookup_outputs: {:?}", lookup_outputs.len());
         lookup_outputs.resize(num_reads, F::ZERO);
         let lookup_outputs = box_dense_poly(lookup_outputs);
 
@@ -288,6 +295,7 @@ impl<
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[tracing::instrument(skip_all, name = "LassoNode::prove_collation_sum_check")]
     pub fn prove_collation_sum_check(
         &self,
         lookup_output_poly: &BoxMultilinearPoly<F, E>,
@@ -323,6 +331,7 @@ impl<
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[tracing::instrument(skip_all, name = "LassoNode::prove_memory_checking")]
     fn prove_memory_checking<'a>(
         preprocessing: &'a LassoPreprocessing<F, E>,
         dims: &'a [BoxMultilinearPoly<'a, F, E>],
@@ -379,6 +388,7 @@ impl<
         MemoryCheckingProver::new(chunks, tau, gamma).prove(transcript)
     }
 
+    #[tracing::instrument(skip_all, name = "LassoNode::verify_memory_checking")]
     fn verify_memory_checking(
         preprocessing: &LassoPreprocessing<F, E>,
         num_vars: usize,
@@ -434,8 +444,8 @@ impl<
             .map(|(i, lookup)| {
                 let mut index_bits = fe_to_bits_le(inputs[i]);
                 index_bits.truncate(lookup.chunk_bits(M).iter().sum());
-                // index_bits.truncate()
                 // TODO: put behind a feature flag
+                println!("{i}/{num_rows}| input: {:?}", inputs[i]);
                 assert_eq!(
                     usize_from_bits_le(&fe_to_bits_le(inputs[i])),
                     usize_from_bits_le(&index_bits)
@@ -511,6 +521,7 @@ impl<
         num_vars: usize,
     ) -> Generic<F, E> {
         let num_memories = self.preprocessing.num_memories;
+        // TODO: expression with flag polys
         let exprs = lookup.combine_lookup_expressions(
             (0..num_memories)
                 .map(|idx| Expression::poly(idx))
@@ -573,7 +584,6 @@ pub struct LassoPreprocessing<F: Field, E> {
 }
 
 impl<F: PrimeField, E: ExtensionField<F>> LassoPreprocessing<F, E> {
-
     #[tracing::instrument(skip_all, name = "LassoNode::preprocess")]
     pub fn preprocess<
         const C: usize,
@@ -631,7 +641,6 @@ impl<F: PrimeField, E: ExtensionField<F>> LassoPreprocessing<F, E> {
         let mut lookup_to_memory_indices = vec![vec![]; Lookups::COUNT];
         for lookup_type in Lookups::iter() {
             for (subtable, dimension_indices) in lookup_type.subtables::<F, E>(C, M) {
-                // println!("dimension_indices: {:?}", dimension_indices.iter().collect_vec());
                 let memory_indices: Vec<_> = subtable_to_memory_indices
                     [Subtables::enum_index(subtable)]
                 .iter()
@@ -641,10 +650,13 @@ impl<F: PrimeField, E: ExtensionField<F>> LassoPreprocessing<F, E> {
                 .collect();
                 lookup_to_memory_indices[Lookups::enum_index(&lookup_type)].extend(memory_indices);
             }
-            // println!("-----------------");
         }
-        println!("lookup_to_memory_indices: {:?}", lookup_to_memory_indices);
-        println!("memory_to_dimension_index {:?}", memory_to_dimension_index);
+
+        println!("num_memories {num_memories}");
+        println!("subtable_to_memory_indices {subtable_to_memory_indices:?}");
+        println!("lookup_to_memory_indices {lookup_to_memory_indices:?}");
+        println!("memory_to_subtable_index {memory_to_subtable_index:?}");
+        println!("memory_to_dimension_index {memory_to_dimension_index:?}");
 
         Self {
             num_memories,

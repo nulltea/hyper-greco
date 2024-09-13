@@ -70,3 +70,6 @@ gkr = { path = "../examples/gkr/gkr" }
 
 [patch."https://github.com/han0110/plonkish"]
 plonkish_backend = { git = "https://github.com/DoHoonKim8/halo2-lasso", branch = "feature/Lasso" }
+
+[patch."https://github.com/han0110/goldilocks"]
+goldilocks = { path = "../Goldilocks" }

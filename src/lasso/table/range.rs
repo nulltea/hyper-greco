@@ -236,6 +236,66 @@ impl<const BOUND: u64> LookupType for RangeLookup<BOUND> {
     }
 }
 
+#[derive(Clone, Debug, Default, Copy)]
+pub struct SmallBoundLookup<const BOUND: u64>;
+
+impl<const BOUND: u64> LookupType for SmallBoundLookup<BOUND> {
+    fn combine_lookups<F: PrimeField>(&self, operands: &[F], _: usize, M: usize) -> F {
+        let weight = F::from(M as u64);
+        inner_product(
+            operands,
+            iter::successors(Some(F::ONE), |power_of_weight| {
+                Some(*power_of_weight * weight)
+            })
+            .take(operands.len())
+            .collect_vec()
+            .iter(),
+        )
+    }
+
+    fn combine_lookup_expressions<F: PrimeField, E: ExtensionField<F>>(
+        &self,
+        expressions: Vec<Expression<E, usize>>,
+        C: usize,
+        M: usize,
+    ) -> Expression<E, usize> {
+        if expressions.len() == 1 {
+            return expressions[0].clone();
+        }
+        Expression::distribute_powers(expressions, E::from_bases(&[F::from(M as u64)]))
+    }
+
+    // SubtableIndices map subtable to memories
+    fn subtables<F: PrimeField, E: ExtensionField<F>>(
+        &self,
+        C: usize,
+        M: usize,
+    ) -> Vec<(Box<dyn LassoSubtable<F, E>>, SubtableIndices)> {
+        vec![(
+            Box::new(BoundSubtable::<F, E, BOUND>::new()),
+            SubtableIndices::from(0),
+        )]
+    }
+
+    fn output<F: PrimeField>(&self, index: &F) -> F {
+        *index
+    }
+
+    fn chunk_bits(&self, M: usize) -> Vec<usize> {
+        let log2_M = M.ilog2() as usize;
+        let bound_bits = BOUND.ilog2() as usize;
+
+        let reminder = 1 << (bound_bits % log2_M);
+        let cutoff = reminder + BOUND % M as u64;
+        let cutoff_log2 = cutoff.ilog2() as usize;
+        vec![cutoff_log2]
+    }
+
+    fn subtable_indices(&self, index_bits: Vec<bool>, log_M: usize) -> Vec<Vec<bool>> {
+        index_bits.chunks(log_M).map(Vec::from).collect_vec()
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;

@@ -11,7 +11,8 @@ use gkr::{
 
 pub mod range;
 use range::*;
-use crate::sk_encryption_circuit::{RangeLookups, RangeSubtables, BfvEncryptBlock, R2_BOUND_ABS};
+// for some reason #[enum_dispatch] needs this
+use crate::sk_encryption_circuit::*;
 
 pub type SubtableId = TypeId;
 pub type LookupId = TypeId;

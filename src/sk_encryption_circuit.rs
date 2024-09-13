@@ -1,6 +1,8 @@
-use crate::constants::sk_enc_constants_1024_2x55_65537::{
+use crate::constants::sk_enc_constants_1024_1x27_65537::S_BOUND;
+pub use crate::constants::sk_enc_constants_1024_2x55_65537::{
     E_BOUND, K0IS, K1_BOUND, N, QIS, R1_BOUNDS, R2_BOUNDS,
 };
+use crate::lasso::table::range::SmallBoundLookup;
 use crate::lasso::{CircuitLookups, LassoPreprocessing};
 use crate::subtable_enum;
 use crate::{
@@ -47,24 +49,37 @@ use tracing::info_span;
 const E_BOUND_LEN: usize = (2 * E_BOUND + 1).next_power_of_two().ilog2() as usize;
 const K1_BOUND_LEN: usize = (2 * K1_BOUND + 1).next_power_of_two().ilog2() as usize;
 pub const R2_BOUND: u64 = R2_BOUNDS[0];
+pub const S_BOUND_ABS: u64 = (2 * S_BOUND) + 1;
+pub const E_BOUND_ABS: u64 = (2 * E_BOUND) + 1;
+pub const K1_BOUND_ABS: u64 = (2 * K1_BOUND) + 1;
 pub const R2_BOUND_ABS: u64 = (2 * R2_BOUNDS[0]) + 1;
+pub const R1_BOUND_ABS: u64 = (2 * R1_BOUNDS[0]) + 1;
+pub const R1_BOUND_ABS1: u64 = (2 * R1_BOUNDS[1]) + 1;
 
 const LIMB_BITS: usize = 16;
-const C: usize = 8;
+const C: usize = 4;
 const M: usize = 1 << LIMB_BITS;
 
 subtable_enum!(
     RangeSubtables,
     Full: FullLimbSubtable<F, E>,
-    R2iBound: BoundSubtable<F, E, R2_BOUND_ABS>
+    SBound: BoundSubtable<F, E, S_BOUND_ABS>,
+    EBound: BoundSubtable<F, E, E_BOUND_ABS>,
+    K1Bound: BoundSubtable<F, E, K1_BOUND_ABS>,
+    R2iBound: BoundSubtable<F, E, R2_BOUND_ABS>,
+    R1iBound: BoundSubtable<F, E, R1_BOUND_ABS>,
+    R1i1Bound: BoundSubtable<F, E, R1_BOUND_ABS1>
 );
 
 #[derive(Copy, Clone, Debug, EnumCount, EnumIter)]
 #[enum_dispatch(LookupType)]
 pub enum RangeLookups {
-    // Range32(RangeStategy<32>),
+    RangeS(SmallBoundLookup<S_BOUND_ABS>),
+    RangeE(SmallBoundLookup<E_BOUND_ABS>),
+    RangeK1(RangeLookup<K1_BOUND_ABS>),
     RangeR2i(RangeLookup<R2_BOUND_ABS>),
-    // RangeTest(RangeStategy<55>),
+    RangeR1i(SmallBoundLookup<R1_BOUND_ABS>),
+    RangeR1i1(SmallBoundLookup<R1_BOUND_ABS1>),
 }
 impl CircuitLookups for RangeLookups {}
 
@@ -186,16 +201,16 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncryptBlock<POLY_LOG2_SIZE> {
             .take(self.num_reps)
             .collect_vec();
 
-        for (i, &r1i) in r1is.iter().enumerate().take(self.num_reps) {
-            let log2_t_size = self.r1i_bound_log2_size()[i];
-            let r1i_m = circuit.insert(InputNode::new(log2_t_size, 1));
-            let r1i_t = circuit.insert(InputNode::new(log2_t_size, 1));
-            let r1i_range = circuit.insert(LogUpNode::new(log2_t_size, log2_size, 1));
+        // for (i, &r1i) in r1is.iter().enumerate().take(self.num_reps) {
+        //     let log2_t_size = self.r1i_bound_log2_size()[i];
+        //     let r1i_m = circuit.insert(InputNode::new(log2_t_size, 1));
+        //     let r1i_t = circuit.insert(InputNode::new(log2_t_size, 1));
+        //     let r1i_range = circuit.insert(LogUpNode::new(log2_t_size, log2_size, 1));
 
-            connect!(circuit {
-                r1i_range <- r1i_m, r1i_t, r1i;
-            });
-        }
+        //     connect!(circuit {
+        //         r1i_range <- r1i_m, r1i_t, r1i;
+        //     });
+        // }
 
         let r1iqis = {
             let r1i_size = 1usize << log2_size;
@@ -215,28 +230,55 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncryptBlock<POLY_LOG2_SIZE> {
 
         let r2is = circuit.insert(InputNode::new(poly_log2_size, self.num_reps));
 
-        let r2is_shifted = {
-            let gates = (0..(1usize << poly_log2_size)) // optimize with num reps?
-                .map(move |j| relay_add_const((0, j), F::from(R2_BOUND)))
-                .collect_vec();
+        let lasso_inputs_batched = {
+            let r2i_log2_size = self.log2_size_with_num_reps(poly_log2_size);
+            let r1i_size = 1usize << log2_size;
+            let gates = chain![
+                R1_BOUNDS.iter().enumerate().flat_map(|(i, &bound)| {
+                    (0..r1i_size).map(move |j| relay_add_const((i, j), F::from(bound)))
+                }),
+                (0..(1usize << r2i_log2_size))
+                    .map(move |j| relay_add_const((2, j), F::from(R2_BOUND))),
+                (0..(1usize << log2_size)).map(move |j| relay_add_const((3, j), F::from(S_BOUND))),
+                (0..(1usize << log2_size)).map(move |j| relay_add_const((4, j), F::from(E_BOUND))),
+                (0..(1usize << log2_size)).map(move |j| relay_add_const((5, j), F::from(K1_BOUND))),
+                (0..(1usize << log2_size)).map(move |j| VanillaGate::constant(F::ZERO)),
+            ]
+            .collect_vec();
 
-            circuit.insert(VanillaNode::new(1, poly_log2_size, gates, self.num_reps))
+            circuit.insert(VanillaNode::new(6, log2_size, gates, 1))
         };
         let r2is_range = {
-            let num_vars = self.log2_size_with_num_reps(poly_log2_size);
+            let r1is_log2_size = log2_size; // self.log2_size_with_num_reps(log2_size);
+            let r2is_log2_size = self.log2_size_with_num_reps(poly_log2_size);
+            let num_vars = log2_size + 3;
             circuit.insert(LassoNode::<F, E, RangeLookups, C, M>::new(
                 preprocessing,
                 num_vars,
                 chain![
+                    iter::repeat(RangeLookups::RangeR1i(SmallBoundLookup::<R1_BOUND_ABS>))
+                        .take(1 << r1is_log2_size),
+                    iter::repeat(RangeLookups::RangeR1i1(SmallBoundLookup::<R1_BOUND_ABS1>))
+                        .take(1 << r1is_log2_size),
                     iter::repeat(RangeLookups::RangeR2i(RangeLookup::<R2_BOUND_ABS>))
-                        .take(1 << num_vars),
+                        .take(1 << r2is_log2_size),
+                    iter::repeat(RangeLookups::RangeS(SmallBoundLookup::<S_BOUND_ABS>))
+                        .take(1 << log2_size),
+                    iter::repeat(RangeLookups::RangeE(SmallBoundLookup::<E_BOUND_ABS>))
+                        .take(1 << log2_size),
+                    iter::repeat(RangeLookups::RangeK1(RangeLookup::<K1_BOUND_ABS>))
+                        .take(1 << log2_size),
                 ]
                 .collect_vec(),
             ))
         };
+        r1is.iter()
+            .take(self.num_reps)
+            .for_each(|&r1i| circuit.connect(r1i, lasso_inputs_batched));
+        // let r11 = r1is[1];
         connect!(circuit {
-            r2is_shifted <- r2is;
-            r2is_range <- r2is_shifted;
+            lasso_inputs_batched <- r2is, s, e, k1;
+            r2is_range <- lasso_inputs_batched;
         });
 
         let s_eval = circuit.insert(FftNode::forward(log2_size));
@@ -341,7 +383,8 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
         &self,
         rng: impl RngCore + Clone,
     ) -> (ProverKey<F, E, Pcs>, VerifierKey<F, E, Pcs>) {
-        let lasso_preprocessing = LassoPreprocessing::<F, E>::preprocess::<C, M, RangeLookups, RangeSubtables<F, E>>();
+        let lasso_preprocessing =
+            LassoPreprocessing::<F, E>::preprocess::<C, M, RangeLookups, RangeSubtables<F, E>>();
 
         let (comms, pks, vks): (
             Vec<Pcs::Commitment>,
@@ -424,23 +467,23 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
         let e = circuit.insert(InputNode::new(log2_size, 1));
         let k1 = circuit.insert(InputNode::new(log2_size, 1));
 
-        let s_m = circuit.insert(InputNode::new(2, 1));
-        let s_t = circuit.insert(InputNode::new(2, 1));
-        let s_range = circuit.insert(LogUpNode::new(2, log2_size, 1));
+        // let s_m = circuit.insert(InputNode::new(2, 1));
+        // let s_t = circuit.insert(InputNode::new(2, 1));
+        // let s_range = circuit.insert(LogUpNode::new(2, log2_size, 1));
 
-        let e_m = circuit.insert(InputNode::new(E_BOUND_LEN, 1));
-        let e_t = circuit.insert(InputNode::new(E_BOUND_LEN, 1));
-        let e_range = circuit.insert(LogUpNode::new(E_BOUND_LEN, log2_size, 1));
+        // let e_m = circuit.insert(InputNode::new(E_BOUND_LEN, 1));
+        // let e_t = circuit.insert(InputNode::new(E_BOUND_LEN, 1));
+        // let e_range = circuit.insert(LogUpNode::new(E_BOUND_LEN, log2_size, 1));
 
-        let k1_m = circuit.insert(InputNode::new(K1_BOUND_LEN, 1));
-        let k1_t = circuit.insert(InputNode::new(K1_BOUND_LEN, 1));
-        let k1_range = circuit.insert(LogUpNode::new(K1_BOUND_LEN, log2_size, 1));
+        // let k1_m = circuit.insert(InputNode::new(K1_BOUND_LEN, 1));
+        // let k1_t = circuit.insert(InputNode::new(K1_BOUND_LEN, 1));
+        // let k1_range = circuit.insert(LogUpNode::new(K1_BOUND_LEN, log2_size, 1));
 
-        connect!(circuit {
-            s_range <- s_m, s_t, s;
-            e_range <- e_m, e_t, e;
-            k1_range <- k1_m, k1_t, k1;
-        });
+        // connect!(circuit {
+        //     s_range <- s_m, s_t, s;
+        //     e_range <- e_m, e_t, e;
+        //     k1_range <- k1_m, k1_t, k1;
+        // });
 
         self.block.configure(circuit, s, e, k1, preprocessing)
     }
@@ -451,56 +494,7 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
     ) -> (
         Vec<BoxMultilinearPoly<'static, F, E>>,
         BoxMultilinearPoly<'static, F, E>,
-    ) {
-        let log2_size = self.log2_size();
-
-        let s = Poly::<F>::new_padded(args.s.clone(), log2_size);
-        let e = Poly::<F>::new_shifted(args.e.clone(), (1 << log2_size) - 1);
-        let k1 = Poly::<F>::new_shifted(args.k1.clone(), (1 << log2_size) - 1);
-
-        let mut r2is = vec![];
-        let mut r1is = vec![];
-        let mut ais = vec![];
-        let mut ct0is = vec![];
-
-        for z in 0..min(args.ct0is.len(), self.block.num_reps) {
-            let r2i = Poly::<F>::new(args.r2is[z].clone());
-            r2is.push(r2i.to_vec());
-
-            let r1i = Poly::<F>::new_padded(args.r1is[z].clone(), log2_size);
-            r1is.push(r1i.to_vec());
-
-            let ai = Poly::<F>::new_padded(args.ais[z].clone(), log2_size);
-            ais.push(ai.to_vec());
-
-            let ct0i = Poly::<F>::new_shifted(args.ct0is[z].clone(), 1 << log2_size);
-            let mut ct0i = ct0i.as_ref()[1..].to_vec();
-            ct0i.push(F::ZERO);
-            ct0is.extend(ct0i);
-        }
-
-        let r2is = r2is
-            .into_iter()
-            .take(self.block.num_reps)
-            .flat_map(|mut r2i| {
-                r2i.push(F::ZERO);
-                r2i
-            })
-            .collect_vec();
-
-        let inputs = chain_par![[s.to_vec(), e.to_vec(), k1.to_vec()], ais, r1is, [r2is],]
-            .map(box_dense_poly)
-            .collect();
-
-        let output = box_dense_poly(ct0is);
-
-        (inputs, output)
-    }
-
-    pub fn gen_values<F: PrimeField, E: ExtensionField<F>>(
-        &self,
-        args: &BfvSkEncryptArgs,
-    ) -> Vec<BoxMultilinearPoly<'static, F, E>>
+    )
     where
         F::Repr: Into<u64>,
     {
@@ -515,9 +509,6 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
         let mut ais = vec![];
         let mut ct0is = vec![];
 
-        let mut qi_constants = vec![];
-        let mut k0i_constants = vec![];
-
         for z in 0..min(args.ct0is.len(), self.block.num_reps) {
             let r2i = Poly::<F>::new(args.r2is[z].clone());
             r2is.push(r2i.to_vec());
@@ -532,83 +523,7 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
             let mut ct0i = ct0i.as_ref()[1..].to_vec();
             ct0i.push(F::ZERO);
             ct0is.extend(ct0i);
-
-            qi_constants.push(F::from_str_vartime(QIS[z]).unwrap());
-            k0i_constants.push(F::from_str_vartime(K0IS[z]).unwrap());
         }
-
-        let es = (0..self.block.num_reps)
-            .flat_map(|_| e.as_ref().to_vec())
-            .collect_vec();
-        let k1k0is = (0..self.block.num_reps)
-            .flat_map(|i| {
-                k1.as_ref()
-                    .iter()
-                    .map(move |&k1| k1 * F::from_str_vartime(K0IS[i]).unwrap())
-            })
-            .collect_vec();
-        let r1iqis = (0..self.block.num_reps)
-            .flat_map(|i| {
-                r1is[i]
-                    .iter()
-                    .map(move |&r1i| r1i * F::from_str_vartime(QIS[i]).unwrap())
-            })
-            .collect_vec();
-
-        let omega = root_of_unity(log2_size);
-
-        let s_eval = {
-            let mut buf = s.to_vec();
-            radix2_fft(&mut buf, omega);
-            buf
-        };
-
-        let ai_evals = ais
-            .iter()
-            .map(|ai| {
-                let mut buf = ai.clone();
-                radix2_fft(&mut buf, omega);
-                buf
-            })
-            .collect_vec();
-
-        let sai_evals = ai_evals
-            .iter()
-            .map(|ai_eval| {
-                izip!(s_eval.clone(), ai_eval.clone())
-                    .map(|(s_e, ai_e)| s_e * ai_e)
-                    .collect_vec()
-            })
-            .collect_vec();
-
-        let sais: Vec<_> = sai_evals
-            .par_iter()
-            .map(|sai_eval| {
-                let mut buf = sai_eval.clone();
-                radix2_ifft(&mut buf, omega);
-                buf
-            })
-            .collect();
-
-        let sai_values = izip!(ai_evals, sai_evals, sais.clone())
-            .flat_map(|(ai_eval, sai_eval, sai)| [ai_eval, sai_eval, sai])
-            .collect_vec();
-
-        let sai = sais.iter().flatten().cloned().collect_vec();
-
-        let r2is_cyclo = r2is
-            .iter()
-            .take(self.block.num_reps)
-            .flat_map(|r2i| {
-                let mut result = vec![F::ZERO; 2 * N]; // Allocate result vector of size 2N-1
-
-                for i in 0..r2i.len() {
-                    result[i] += r2i[i]; // Add P(x)
-                    result[i + N] += r2i[i]; // Add P(x) * x^N
-                }
-                result
-            })
-            .collect_vec();
 
         let r2is = r2is
             .into_iter()
@@ -619,94 +534,24 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
             })
             .collect_vec();
 
-        let r2is_shifted = r2is
-            .iter()
-            .map(|&r2i| r2i + F::from(R2_BOUND))
-            .collect_vec();
+        for s in s.to_vec() {
+            let s_shifted = s + F::from(S_BOUND);
 
-        let (s_t, s_m) = {
-            let t = [F::ZERO, F::ONE, F::ZERO - F::ONE, F::ZERO];
-            let mut m = [F::ZERO; 4];
-            s.to_vec().iter().for_each(|s| {
-                if let Some(i) = t.iter().position(|e| e == s) {
-                    m[i] += F::ONE;
-                }
-            });
+            if S_BOUND_ABS < s_shifted.to_repr().into() {
+                println!("{s_shifted:?} > {}", S_BOUND_ABS);
+                panic!("s_shifted out of bounds");
+            }
+        }
 
-            (t.to_vec(), m.to_vec())
-        };
+        println!("all r1i in bounds");
 
-        let (e_t, e_m) = {
-            let mut t = (0..=E_BOUND)
-                .flat_map(|b| [F::ZERO - F::from(b), F::from(b)])
-                .collect_vec();
-            t.resize(1 << E_BOUND_LEN, F::ZERO);
-            let mut m = vec![F::ZERO; 1 << E_BOUND_LEN];
-            e.as_ref().iter().for_each(|s| {
-                if let Some(i) = t.iter().position(|e| e == s) {
-                    m[i] += F::ONE;
-                }
-            });
+        let inputs = chain_par![[s.to_vec(), e.to_vec(), k1.to_vec()], ais, r1is, [r2is],]
+            .map(box_dense_poly)
+            .collect();
 
-            (t, m)
-        };
+        let output = box_dense_poly(ct0is);
 
-        let (k1_t, k1_m) = {
-            let mut t = (0..=K1_BOUND)
-                .flat_map(|b| [F::ZERO - F::from(b), F::from(b)])
-                .collect_vec();
-            t.resize(1 << K1_BOUND_LEN, F::ZERO);
-            let mut m = vec![F::ZERO; 1 << K1_BOUND_LEN];
-            k1.as_ref().iter().for_each(|s| {
-                if let Some(i) = t.iter().position(|e| e == s) {
-                    m[i] += F::ONE;
-                }
-            });
-
-            (t, m)
-        };
-
-        let r1i_range_values = izip!(R1_BOUNDS, self.block.r1i_bound_log2_size(), &r1is)
-            .map(|(bound, bound_len, r1i)| {
-                let mut t = (0..=bound)
-                    .flat_map(|b| [F::ZERO - F::from(b), F::from(b)])
-                    .collect_vec();
-                t.resize(1 << bound_len, F::ZERO);
-                let mut m = vec![F::ZERO; 1 << bound_len];
-                r1i.iter().for_each(|s| {
-                    if let Some(i) = t.iter().position(|e| e == s) {
-                        m[i] += F::ONE;
-                    }
-                });
-
-                (m, t)
-            })
-            .take(self.block.num_reps)
-            .flat_map(|(m, t)| [m, t, vec![F::ZERO]])
-            .collect_vec();
-
-        chain_par![
-            [s.to_vec(), e.to_vec(), k1.to_vec()],
-            [s_m, s_t, vec![F::ZERO]],   // s_range
-            [e_m, e_t, vec![F::ZERO]],   // e_range
-            [k1_m, k1_t, vec![F::ZERO]], // k1_range
-            [es, k1k0is],
-            ais,
-            r1is,
-            r1i_range_values, // r1i_range
-            [r1iqis],
-            [r2is, r2is_shifted, vec![F::ZERO]],
-            // [r2is],
-            // [r2is_m, r2is_t, vec![F::ZERO]] // r2is_range
-            [s_eval.clone()],
-            [s_eval],
-            [sai],
-            sai_values,
-            [r2is_cyclo],
-            [ct0is]
-        ]
-        .map(box_dense_poly)
-        .collect()
+        (inputs, output)
     }
 
     pub fn prove<
@@ -736,9 +581,9 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
             let (inputs, ctis_poly) =
                 info_span!("parse inputs").in_scope(|| self.get_inputs::<F, F>(args));
 
-            // let values = info_span!("eval circuit").in_scope(|| circuit.evaluate(inputs));
+            let values = info_span!("eval circuit").in_scope(|| circuit.evaluate(inputs));
 
-            let values = info_span!("gen values").in_scope(|| self.gen_values::<F, F>(args));
+            // let values = info_span!("gen values").in_scope(|| self.gen_values::<F, F>(args));
 
             let ct0is_claim = info_span!("eval output").in_scope(|| {
                 let point = transcript.squeeze_challenges(self.ct0is_log2_size());
@@ -746,7 +591,7 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
                 EvalClaim::new(point.clone(), value)
             });
 
-            let mut output_claims = vec![EvalClaim::new(vec![], F::ZERO); 4 + self.block.num_reps]; // 4 + self.block.num_reps// should be self.block.num_reps * 2 (for r2is range checks)
+            let mut output_claims = vec![EvalClaim::new(vec![], F::ZERO); 1]; // 4 + self.block.num_reps// should be self.block.num_reps * 2 (for r2is range checks)
             output_claims.push(ct0is_claim);
 
             (values, output_claims)
@@ -840,11 +685,11 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
                     .collect_vec(),
             );
             let value = ct0is.evaluate(&point);
-            
+
             EvalClaim::new(point, value)
         };
 
-        let mut output_claims = vec![EvalClaim::new(vec![], F::ZERO); 4 + self.block.num_reps]; // 4 + self.block.num_reps // should be self.block.num_reps * 2 (for r2is range checks)
+        let mut output_claims = vec![EvalClaim::new(vec![], F::ZERO); 1]; // 4 + self.block.num_reps // should be self.block.num_reps * 2 (for r2is range checks)
         output_claims.push(ct0is_claim);
         // let output_claims = vec![ct0is_claim];
 
@@ -984,3 +829,215 @@ mod test {
             .in_scope(|| bfv.verify::<Field, Brakedown<Field>>(vk, &proof, args.ct0is));
     }
 }
+
+// pub fn gen_values<F: PrimeField, E: ExtensionField<F>>(
+//     &self,
+//     args: &BfvSkEncryptArgs,
+// ) -> Vec<BoxMultilinearPoly<'static, F, E>>
+// where
+//     F::Repr: Into<u64>,
+// {
+//     let log2_size = self.log2_size();
+
+//     let s = Poly::<F>::new_padded(args.s.clone(), log2_size);
+//     let e = Poly::<F>::new_shifted(args.e.clone(), (1 << log2_size) - 1);
+//     let k1 = Poly::<F>::new_shifted(args.k1.clone(), (1 << log2_size) - 1);
+
+//     let mut r2is = vec![];
+//     let mut r1is = vec![];
+//     let mut ais = vec![];
+//     let mut ct0is = vec![];
+
+//     let mut qi_constants = vec![];
+//     let mut k0i_constants = vec![];
+
+//     for z in 0..min(args.ct0is.len(), self.block.num_reps) {
+//         let r2i = Poly::<F>::new(args.r2is[z].clone());
+//         r2is.push(r2i.to_vec());
+
+//         let r1i = Poly::<F>::new_padded(args.r1is[z].clone(), log2_size);
+//         r1is.push(r1i.to_vec());
+
+//         let ai = Poly::<F>::new_padded(args.ais[z].clone(), log2_size);
+//         ais.push(ai.to_vec());
+
+//         let ct0i = Poly::<F>::new_shifted(args.ct0is[z].clone(), 1 << log2_size);
+//         let mut ct0i = ct0i.as_ref()[1..].to_vec();
+//         ct0i.push(F::ZERO);
+//         ct0is.extend(ct0i);
+
+//         qi_constants.push(F::from_str_vartime(QIS[z]).unwrap());
+//         k0i_constants.push(F::from_str_vartime(K0IS[z]).unwrap());
+//     }
+
+//     let es = (0..self.block.num_reps)
+//         .flat_map(|_| e.as_ref().to_vec())
+//         .collect_vec();
+//     let k1k0is = (0..self.block.num_reps)
+//         .flat_map(|i| {
+//             k1.as_ref()
+//                 .iter()
+//                 .map(move |&k1| k1 * F::from_str_vartime(K0IS[i]).unwrap())
+//         })
+//         .collect_vec();
+//     let r1iqis = (0..self.block.num_reps)
+//         .flat_map(|i| {
+//             r1is[i]
+//                 .iter()
+//                 .map(move |&r1i| r1i * F::from_str_vartime(QIS[i]).unwrap())
+//         })
+//         .collect_vec();
+
+//     let omega = root_of_unity(log2_size);
+
+//     let s_eval = {
+//         let mut buf = s.to_vec();
+//         radix2_fft(&mut buf, omega);
+//         buf
+//     };
+
+//     let ai_evals = ais
+//         .iter()
+//         .map(|ai| {
+//             let mut buf = ai.clone();
+//             radix2_fft(&mut buf, omega);
+//             buf
+//         })
+//         .collect_vec();
+
+//     let sai_evals = ai_evals
+//         .iter()
+//         .map(|ai_eval| {
+//             izip!(s_eval.clone(), ai_eval.clone())
+//                 .map(|(s_e, ai_e)| s_e * ai_e)
+//                 .collect_vec()
+//         })
+//         .collect_vec();
+
+//     let sais: Vec<_> = sai_evals
+//         .par_iter()
+//         .map(|sai_eval| {
+//             let mut buf = sai_eval.clone();
+//             radix2_ifft(&mut buf, omega);
+//             buf
+//         })
+//         .collect();
+
+//     let sai_values = izip!(ai_evals, sai_evals, sais.clone())
+//         .flat_map(|(ai_eval, sai_eval, sai)| [ai_eval, sai_eval, sai])
+//         .collect_vec();
+
+//     let sai = sais.iter().flatten().cloned().collect_vec();
+
+//     let r2is_cyclo = r2is
+//         .iter()
+//         .take(self.block.num_reps)
+//         .flat_map(|r2i| {
+//             let mut result = vec![F::ZERO; 2 * N]; // Allocate result vector of size 2N-1
+
+//             for i in 0..r2i.len() {
+//                 result[i] += r2i[i]; // Add P(x)
+//                 result[i + N] += r2i[i]; // Add P(x) * x^N
+//             }
+//             result
+//         })
+//         .collect_vec();
+
+//     let r2is = r2is
+//         .into_iter()
+//         .take(self.block.num_reps)
+//         .flat_map(|mut r2i| {
+//             r2i.push(F::ZERO);
+//             r2i
+//         })
+//         .collect_vec();
+
+//     let r2is_shifted = r2is
+//         .iter()
+//         .map(|&r2i| r2i + F::from(R2_BOUND))
+//         .collect_vec();
+
+//     let (s_t, s_m) = {
+//         let t = [F::ZERO, F::ONE, F::ZERO - F::ONE, F::ZERO];
+//         let mut m = [F::ZERO; 4];
+//         s.to_vec().iter().for_each(|s| {
+//             if let Some(i) = t.iter().position(|e| e == s) {
+//                 m[i] += F::ONE;
+//             }
+//         });
+
+//         (t.to_vec(), m.to_vec())
+//     };
+
+//     let (e_t, e_m) = {
+//         let mut t = (0..=E_BOUND)
+//             .flat_map(|b| [F::ZERO - F::from(b), F::from(b)])
+//             .collect_vec();
+//         t.resize(1 << E_BOUND_LEN, F::ZERO);
+//         let mut m = vec![F::ZERO; 1 << E_BOUND_LEN];
+//         e.as_ref().iter().for_each(|s| {
+//             if let Some(i) = t.iter().position(|e| e == s) {
+//                 m[i] += F::ONE;
+//             }
+//         });
+
+//         (t, m)
+//     };
+
+//     let (k1_t, k1_m) = {
+//         let mut t = (0..=K1_BOUND)
+//             .flat_map(|b| [F::ZERO - F::from(b), F::from(b)])
+//             .collect_vec();
+//         t.resize(1 << K1_BOUND_LEN, F::ZERO);
+//         let mut m = vec![F::ZERO; 1 << K1_BOUND_LEN];
+//         k1.as_ref().iter().for_each(|s| {
+//             if let Some(i) = t.iter().position(|e| e == s) {
+//                 m[i] += F::ONE;
+//             }
+//         });
+
+//         (t, m)
+//     };
+
+//     let r1i_range_values = izip!(R1_BOUNDS, self.block.r1i_bound_log2_size(), &r1is)
+//         .map(|(bound, bound_len, r1i)| {
+//             let mut t = (0..=bound)
+//                 .flat_map(|b| [F::ZERO - F::from(b), F::from(b)])
+//                 .collect_vec();
+//             t.resize(1 << bound_len, F::ZERO);
+//             let mut m = vec![F::ZERO; 1 << bound_len];
+//             r1i.iter().for_each(|s| {
+//                 if let Some(i) = t.iter().position(|e| e == s) {
+//                     m[i] += F::ONE;
+//                 }
+//             });
+
+//             (m, t)
+//         })
+//         .take(self.block.num_reps)
+//         .flat_map(|(m, t)| [m, t, vec![F::ZERO]])
+//         .collect_vec();
+
+//     chain_par![
+//         [s.to_vec(), e.to_vec(), k1.to_vec()],
+//         [s_m, s_t, vec![F::ZERO]],   // s_range
+//         [e_m, e_t, vec![F::ZERO]],   // e_range
+//         [k1_m, k1_t, vec![F::ZERO]], // k1_range
+//         [es, k1k0is],
+//         ais,
+//         r1is,
+//         r1i_range_values, // r1i_range
+//         [r1iqis],
+//         [r2is, r2is_shifted, vec![F::ZERO]],
+//         // [r2is],
+//         // [r2is_m, r2is_t, vec![F::ZERO]] // r2is_range
+//         [s_eval.clone()],
+//         [s_eval],
+//         [sai],
+//         sai_values,
+//         [r2is_cyclo],
+//         [ct0is]
+//     ]
+//     .map(box_dense_poly)
+//     .collect()
+// }
