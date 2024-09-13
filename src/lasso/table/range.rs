@@ -36,6 +36,10 @@ impl<F: PrimeField, E: ExtensionField<F>> LassoSubtable<F, E> for FullLimbSubtab
         });
         MultilinearPolyTerms::new(log2_M, PolyExpr::Sum(limb_terms))
     }
+
+    fn subtable_id(&self) -> super::SubtableId {
+        "full".to_string()
+    }
 }
 
 impl<F, E> FullLimbSubtable<F, E> {
@@ -45,15 +49,16 @@ impl<F, E> FullLimbSubtable<F, E> {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct BoundSubtable<F, E, const BOUND: u64>(PhantomData<(F, E)>);
+pub struct BoundSubtable<F, E> {
+    bound: u64,
+    _marker: PhantomData<(F, E)>,
+}
 
-impl<F: PrimeField, E: ExtensionField<F>, const BOUND: u64> LassoSubtable<F, E>
-    for BoundSubtable<F, E, BOUND>
-{
+impl<F: PrimeField, E: ExtensionField<F>> LassoSubtable<F, E> for BoundSubtable<F, E> {
     fn materialize(&self, M: usize) -> Vec<F> {
-        let bound_bits = BOUND.ilog2() as usize;
+        let bound_bits = self.bound.ilog2() as usize;
         let reminder = 1 << (bound_bits % M.ilog2() as usize);
-        let cutoff = (reminder + BOUND % M as u64) as usize;
+        let cutoff = (reminder + self.bound % M as u64) as usize;
 
         (0..M)
             .map(|i| {
@@ -70,9 +75,9 @@ impl<F: PrimeField, E: ExtensionField<F>, const BOUND: u64> LassoSubtable<F, E>
         let log2_M = M.ilog2() as usize;
         let b = point.len();
 
-        let bound_bits = BOUND.ilog2() as usize;
+        let bound_bits = self.bound.ilog2() as usize;
         let reminder = 1 << (bound_bits % log2_M);
-        let cutoff = reminder + BOUND % (1 << log2_M);
+        let cutoff = reminder + self.bound % (1 << log2_M);
         let cutoff_log2 = cutoff.ilog2() as usize;
 
         let g_base = 1 << cutoff_log2;
@@ -108,9 +113,9 @@ impl<F: PrimeField, E: ExtensionField<F>, const BOUND: u64> LassoSubtable<F, E>
 
     fn evaluate_mle_expr(&self, log2_M: usize) -> MultilinearPolyTerms<F> {
         let M = 1 << log2_M;
-        let bound_bits = BOUND.ilog2() as usize;
+        let bound_bits = self.bound.ilog2() as usize;
         let reminder = 1 << (bound_bits % log2_M);
-        let cutoff = reminder + BOUND % M;
+        let cutoff = reminder + self.bound % M;
         let cutoff_log2 = cutoff.ilog2() as usize;
 
         let rem_init = PolyExpr::Var(0);
@@ -154,19 +159,29 @@ impl<F: PrimeField, E: ExtensionField<F>, const BOUND: u64> LassoSubtable<F, E>
 
         MultilinearPolyTerms::new(log2_M, result)
     }
+
+    fn subtable_id(&self) -> super::SubtableId {
+        format!("bound_{}", self.bound)
+    }
 }
 
-impl<F, E, const BOUND: u64> BoundSubtable<F, E, BOUND> {
-    pub fn new() -> Self {
-        Self(PhantomData)
+impl<F, E> BoundSubtable<F, E> {
+    pub fn new(bound: u64) -> Self {
+        Self {
+            bound,
+            _marker: PhantomData,
+        }
     }
 }
 
 #[derive(Clone, Debug, Default, Copy)]
-pub struct RangeLookup<const BOUND: u64>;
+pub struct RangeLookup<F, E> {
+    bound: u64,
+    _marker: PhantomData<(F, E)>,
+}
 
-impl<const BOUND: u64> LookupType for RangeLookup<BOUND> {
-    fn combine_lookups<F: PrimeField>(&self, operands: &[F], _: usize, M: usize) -> F {
+impl<F: PrimeField, E: ExtensionField<F>> LookupType<F, E> for RangeLookup<F, E> {
+    fn combine_lookups(&self, operands: &[F], _: usize, M: usize) -> F {
         let weight = F::from(M as u64);
         inner_product(
             operands,
@@ -179,7 +194,7 @@ impl<const BOUND: u64> LookupType for RangeLookup<BOUND> {
         )
     }
 
-    fn combine_lookup_expressions<F: PrimeField, E: ExtensionField<F>>(
+    fn combine_lookup_expressions(
         &self,
         expressions: Vec<Expression<E, usize>>,
         C: usize,
@@ -189,19 +204,22 @@ impl<const BOUND: u64> LookupType for RangeLookup<BOUND> {
     }
 
     // SubtableIndices map subtable to memories
-    fn subtables<F: PrimeField, E: ExtensionField<F>>(
+    fn subtables(
         &self,
         C: usize,
         M: usize,
     ) -> Vec<(Box<dyn LassoSubtable<F, E>>, SubtableIndices)> {
         let full = Box::new(FullLimbSubtable::<F, E>::new());
         let log_M = M.ilog2() as usize;
-        let bound_bits = BOUND.ilog2() as usize;
+        let bound_bits = self.bound.ilog2() as usize;
         let num_chunks = bound_bits / log_M;
+        let rem = Box::new(BoundSubtable::<F, E>::new(self.bound));
+
         if bound_bits % log_M == 0 {
             vec![(full, SubtableIndices::from(0..num_chunks))]
+        } else if bound_bits < log_M {
+            vec![(rem, SubtableIndices::from(0))]
         } else {
-            let rem = Box::new(BoundSubtable::<F, E, BOUND>::new());
             vec![
                 (full, SubtableIndices::from(0..num_chunks)),
                 (rem, SubtableIndices::from(num_chunks)),
@@ -209,17 +227,17 @@ impl<const BOUND: u64> LookupType for RangeLookup<BOUND> {
         }
     }
 
-    fn output<F: PrimeField>(&self, index: &F) -> F {
+    fn output(&self, index: &F) -> F {
         *index
     }
 
     fn chunk_bits(&self, M: usize) -> Vec<usize> {
         let log2_M = M.ilog2() as usize;
-        let bound_bits = BOUND.ilog2() as usize;
+        let bound_bits = self.bound.ilog2() as usize;
 
         let remainder_bits = if bound_bits % log2_M != 0 {
             let reminder = 1 << (bound_bits % log2_M);
-            let cutoff = reminder + BOUND % M as u64;
+            let cutoff = reminder + self.bound % M as u64;
             let cutoff_log2 = cutoff.ilog2() as usize;
             vec![cutoff_log2]
         } else {
@@ -234,65 +252,24 @@ impl<const BOUND: u64> LookupType for RangeLookup<BOUND> {
     fn subtable_indices(&self, index_bits: Vec<bool>, log_M: usize) -> Vec<Vec<bool>> {
         index_bits.chunks(log_M).map(Vec::from).collect_vec()
     }
+
+    fn lookup_id(&self) -> super::LookupId {
+        format!("range_{}", self.bound)
+    }
 }
 
-#[derive(Clone, Debug, Default, Copy)]
-pub struct SmallBoundLookup<const BOUND: u64>;
-
-impl<const BOUND: u64> LookupType for SmallBoundLookup<BOUND> {
-    fn combine_lookups<F: PrimeField>(&self, operands: &[F], _: usize, M: usize) -> F {
-        let weight = F::from(M as u64);
-        inner_product(
-            operands,
-            iter::successors(Some(F::ONE), |power_of_weight| {
-                Some(*power_of_weight * weight)
-            })
-            .take(operands.len())
-            .collect_vec()
-            .iter(),
-        )
+impl<F: PrimeField, E: ExtensionField<F>> RangeLookup<F, E> {
+    pub fn new_boxed(bound: u64) -> Box<dyn LookupType<F, E>> {
+        Box::new(Self {
+            bound,
+            _marker: PhantomData,
+        })
     }
+}
 
-    fn combine_lookup_expressions<F: PrimeField, E: ExtensionField<F>>(
-        &self,
-        expressions: Vec<Expression<E, usize>>,
-        C: usize,
-        M: usize,
-    ) -> Expression<E, usize> {
-        if expressions.len() == 1 {
-            return expressions[0].clone();
-        }
-        Expression::distribute_powers(expressions, E::from_bases(&[F::from(M as u64)]))
-    }
-
-    // SubtableIndices map subtable to memories
-    fn subtables<F: PrimeField, E: ExtensionField<F>>(
-        &self,
-        C: usize,
-        M: usize,
-    ) -> Vec<(Box<dyn LassoSubtable<F, E>>, SubtableIndices)> {
-        vec![(
-            Box::new(BoundSubtable::<F, E, BOUND>::new()),
-            SubtableIndices::from(0),
-        )]
-    }
-
-    fn output<F: PrimeField>(&self, index: &F) -> F {
-        *index
-    }
-
-    fn chunk_bits(&self, M: usize) -> Vec<usize> {
-        let log2_M = M.ilog2() as usize;
-        let bound_bits = BOUND.ilog2() as usize;
-
-        let reminder = 1 << (bound_bits % log2_M);
-        let cutoff = reminder + BOUND % M as u64;
-        let cutoff_log2 = cutoff.ilog2() as usize;
-        vec![cutoff_log2]
-    }
-
-    fn subtable_indices(&self, index_bits: Vec<bool>, log_M: usize) -> Vec<Vec<bool>> {
-        index_bits.chunks(log_M).map(Vec::from).collect_vec()
+impl RangeLookup<(), ()> {
+    pub fn id_for(bound: u64) -> super::LookupId {
+        format!("range_{}", bound)
     }
 }
 
@@ -335,7 +312,7 @@ mod test {
     fn bound_subtable_mle_eval_correct() {
         const BOUND: u64 = (1 << 55) + 55;
 
-        let s = BoundSubtable::<F, F, BOUND>::new();
+        let s = BoundSubtable::<F, F>::new(BOUND);
         let evals = s.materialize(M);
 
         let poly = box_dense_poly::<F, F, _>(evals);

@@ -1,19 +1,12 @@
-use crate::constants::sk_enc_constants_1024_1x27_65537::S_BOUND;
 pub use crate::constants::sk_enc_constants_1024_2x55_65537::{
     E_BOUND, K0IS, K1_BOUND, N, QIS, R1_BOUNDS, R2_BOUNDS,
 };
-use crate::lasso::table::range::SmallBoundLookup;
-use crate::lasso::{CircuitLookups, LassoPreprocessing};
-use crate::subtable_enum;
+use crate::{constants::sk_enc_constants_1024_1x27_65537::S_BOUND, lasso::LassoPreprocessing};
 use crate::{
-    lasso::{
-        table::range::{BoundSubtable, FullLimbSubtable, RangeLookup},
-        LassoNode, SubtableId, SubtableSet,
-    },
+    lasso::{table::range::RangeLookup, LassoNode},
     poly::Poly,
     transcript::Keccak256Transcript,
 };
-use enum_dispatch::enum_dispatch;
 use gkr::circuit::node::LogUpNode;
 use gkr::{
     chain_par,
@@ -32,6 +25,7 @@ use gkr::{
     verify_gkr,
 };
 use itertools::chain;
+use paste::paste;
 use plonkish_backend::pcs::multilinear::MultilinearBrakedown;
 use plonkish_backend::pcs::PolynomialCommitmentScheme;
 use plonkish_backend::poly::multilinear::MultilinearPolynomial;
@@ -39,6 +33,7 @@ use plonkish_backend::util::code::BrakedownSpec6;
 use plonkish_backend::util::hash::{Keccak256, Output};
 use rand::RngCore;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use rayon::vec;
 use serde::Deserialize;
 use std::any::TypeId;
 use std::cmp::min;
@@ -49,39 +44,10 @@ use tracing::info_span;
 const E_BOUND_LEN: usize = (2 * E_BOUND + 1).next_power_of_two().ilog2() as usize;
 const K1_BOUND_LEN: usize = (2 * K1_BOUND + 1).next_power_of_two().ilog2() as usize;
 pub const R2_BOUND: u64 = R2_BOUNDS[0];
-pub const S_BOUND_ABS: u64 = (2 * S_BOUND) + 1;
-pub const E_BOUND_ABS: u64 = (2 * E_BOUND) + 1;
-pub const K1_BOUND_ABS: u64 = (2 * K1_BOUND) + 1;
-pub const R2_BOUND_ABS: u64 = (2 * R2_BOUNDS[0]) + 1;
-pub const R1_BOUND_ABS: u64 = (2 * R1_BOUNDS[0]) + 1;
-pub const R1_BOUND_ABS1: u64 = (2 * R1_BOUNDS[1]) + 1;
 
 const LIMB_BITS: usize = 16;
 const C: usize = 4;
 const M: usize = 1 << LIMB_BITS;
-
-subtable_enum!(
-    RangeSubtables,
-    Full: FullLimbSubtable<F, E>,
-    SBound: BoundSubtable<F, E, S_BOUND_ABS>,
-    EBound: BoundSubtable<F, E, E_BOUND_ABS>,
-    K1Bound: BoundSubtable<F, E, K1_BOUND_ABS>,
-    R2iBound: BoundSubtable<F, E, R2_BOUND_ABS>,
-    R1iBound: BoundSubtable<F, E, R1_BOUND_ABS>,
-    R1i1Bound: BoundSubtable<F, E, R1_BOUND_ABS1>
-);
-
-#[derive(Copy, Clone, Debug, EnumCount, EnumIter)]
-#[enum_dispatch(LookupType)]
-pub enum RangeLookups {
-    RangeS(SmallBoundLookup<S_BOUND_ABS>),
-    RangeE(SmallBoundLookup<E_BOUND_ABS>),
-    RangeK1(RangeLookup<K1_BOUND_ABS>),
-    RangeR2i(RangeLookup<R2_BOUND_ABS>),
-    RangeR1i(SmallBoundLookup<R1_BOUND_ABS>),
-    RangeR1i1(SmallBoundLookup<R1_BOUND_ABS1>),
-}
-impl CircuitLookups for RangeLookups {}
 
 pub type Brakedown<F> =
     MultilinearBrakedown<F, plonkish_backend::util::hash::Keccak256, BrakedownSpec6>;
@@ -252,22 +218,18 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncryptBlock<POLY_LOG2_SIZE> {
             let r1is_log2_size = log2_size; // self.log2_size_with_num_reps(log2_size);
             let r2is_log2_size = self.log2_size_with_num_reps(poly_log2_size);
             let num_vars = log2_size + 3;
-            circuit.insert(LassoNode::<F, E, RangeLookups, C, M>::new(
+            circuit.insert(LassoNode::<F, E, C, M>::new(
                 preprocessing,
                 num_vars,
                 chain![
-                    iter::repeat(RangeLookups::RangeR1i(SmallBoundLookup::<R1_BOUND_ABS>))
-                        .take(1 << r1is_log2_size),
-                    iter::repeat(RangeLookups::RangeR1i1(SmallBoundLookup::<R1_BOUND_ABS1>))
-                        .take(1 << r1is_log2_size),
-                    iter::repeat(RangeLookups::RangeR2i(RangeLookup::<R2_BOUND_ABS>))
-                        .take(1 << r2is_log2_size),
-                    iter::repeat(RangeLookups::RangeS(SmallBoundLookup::<S_BOUND_ABS>))
-                        .take(1 << log2_size),
-                    iter::repeat(RangeLookups::RangeE(SmallBoundLookup::<E_BOUND_ABS>))
-                        .take(1 << log2_size),
-                    iter::repeat(RangeLookups::RangeK1(RangeLookup::<K1_BOUND_ABS>))
-                        .take(1 << log2_size),
+                    R1_BOUNDS
+                        .iter()
+                        .flat_map(|&bound| iter::repeat(RangeLookup::id_for(bound * 2 + 1))
+                            .take(1 << r1is_log2_size)),
+                    iter::repeat(RangeLookup::id_for(R2_BOUND * 2 + 1)).take(1 << r2is_log2_size),
+                    iter::repeat(RangeLookup::id_for(S_BOUND * 2 + 1)).take(1 << log2_size),
+                    iter::repeat(RangeLookup::id_for(E_BOUND * 2 + 1)).take(1 << log2_size),
+                    iter::repeat(RangeLookup::id_for(K1_BOUND * 2 + 1)).take(1 << log2_size),
                 ]
                 .collect_vec(),
             ))
@@ -275,7 +237,7 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncryptBlock<POLY_LOG2_SIZE> {
         r1is.iter()
             .take(self.num_reps)
             .for_each(|&r1i| circuit.connect(r1i, lasso_inputs_batched));
-        // let r11 = r1is[1];
+
         connect!(circuit {
             lasso_inputs_batched <- r2is, s, e, k1;
             r2is_range <- lasso_inputs_batched;
@@ -383,8 +345,17 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
         &self,
         rng: impl RngCore + Clone,
     ) -> (ProverKey<F, E, Pcs>, VerifierKey<F, E, Pcs>) {
-        let lasso_preprocessing =
-            LassoPreprocessing::<F, E>::preprocess::<C, M, RangeLookups, RangeSubtables<F, E>>();
+        let lasso_preprocessing = LassoPreprocessing::<F, E>::preprocess::<C, M>(chain![
+            [
+                RangeLookup::new_boxed(S_BOUND * 2 + 1),
+                RangeLookup::new_boxed(E_BOUND * 2 + 1),
+                RangeLookup::new_boxed(K1_BOUND * 2 + 1),
+                RangeLookup::new_boxed(R2_BOUND * 2 + 1),
+            ],
+            R1_BOUNDS
+                .iter()
+                .map(|&bound| RangeLookup::new_boxed(bound * 2 + 1))
+        ]);
 
         let (comms, pks, vks): (
             Vec<Pcs::Commitment>,
@@ -467,23 +438,23 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
         let e = circuit.insert(InputNode::new(log2_size, 1));
         let k1 = circuit.insert(InputNode::new(log2_size, 1));
 
-        // let s_m = circuit.insert(InputNode::new(2, 1));
-        // let s_t = circuit.insert(InputNode::new(2, 1));
-        // let s_range = circuit.insert(LogUpNode::new(2, log2_size, 1));
+        let s_m = circuit.insert(InputNode::new(2, 1));
+        let s_t = circuit.insert(InputNode::new(2, 1));
+        let s_range = circuit.insert(LogUpNode::new(2, log2_size, 1));
 
-        // let e_m = circuit.insert(InputNode::new(E_BOUND_LEN, 1));
-        // let e_t = circuit.insert(InputNode::new(E_BOUND_LEN, 1));
-        // let e_range = circuit.insert(LogUpNode::new(E_BOUND_LEN, log2_size, 1));
+        let e_m = circuit.insert(InputNode::new(E_BOUND_LEN, 1));
+        let e_t = circuit.insert(InputNode::new(E_BOUND_LEN, 1));
+        let e_range = circuit.insert(LogUpNode::new(E_BOUND_LEN, log2_size, 1));
 
-        // let k1_m = circuit.insert(InputNode::new(K1_BOUND_LEN, 1));
-        // let k1_t = circuit.insert(InputNode::new(K1_BOUND_LEN, 1));
-        // let k1_range = circuit.insert(LogUpNode::new(K1_BOUND_LEN, log2_size, 1));
+        let k1_m = circuit.insert(InputNode::new(K1_BOUND_LEN, 1));
+        let k1_t = circuit.insert(InputNode::new(K1_BOUND_LEN, 1));
+        let k1_range = circuit.insert(LogUpNode::new(K1_BOUND_LEN, log2_size, 1));
 
-        // connect!(circuit {
-        //     s_range <- s_m, s_t, s;
-        //     e_range <- e_m, e_t, e;
-        //     k1_range <- k1_m, k1_t, k1;
-        // });
+        connect!(circuit {
+            s_range <- s_m, s_t, s;
+            e_range <- e_m, e_t, e;
+            k1_range <- k1_m, k1_t, k1;
+        });
 
         self.block.configure(circuit, s, e, k1, preprocessing)
     }
@@ -534,20 +505,59 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
             })
             .collect_vec();
 
-        for s in s.to_vec() {
-            let s_shifted = s + F::from(S_BOUND);
+        let (s_t, s_m) = {
+            let t = [F::ZERO, F::ONE, F::ZERO - F::ONE, F::ZERO];
+            let mut m = [F::ZERO; 4];
+            s.to_vec().iter().for_each(|s| {
+                if let Some(i) = t.iter().position(|e| e == s) {
+                    m[i] += F::ONE;
+                }
+            });
 
-            if S_BOUND_ABS < s_shifted.to_repr().into() {
-                println!("{s_shifted:?} > {}", S_BOUND_ABS);
-                panic!("s_shifted out of bounds");
-            }
-        }
+            (t.to_vec(), m.to_vec())
+        };
 
-        println!("all r1i in bounds");
+        let (e_t, e_m) = {
+            let mut t = (0..=E_BOUND)
+                .flat_map(|b| [F::ZERO - F::from(b), F::from(b)])
+                .collect_vec();
+            t.resize(1 << E_BOUND_LEN, F::ZERO);
+            let mut m = vec![F::ZERO; 1 << E_BOUND_LEN];
+            e.as_ref().iter().for_each(|s| {
+                if let Some(i) = t.iter().position(|e| e == s) {
+                    m[i] += F::ONE;
+                }
+            });
 
-        let inputs = chain_par![[s.to_vec(), e.to_vec(), k1.to_vec()], ais, r1is, [r2is],]
-            .map(box_dense_poly)
-            .collect();
+            (t, m)
+        };
+
+        let (k1_t, k1_m) = {
+            let mut t = (0..=K1_BOUND)
+                .flat_map(|b| [F::ZERO - F::from(b), F::from(b)])
+                .collect_vec();
+            t.resize(1 << K1_BOUND_LEN, F::ZERO);
+            let mut m = vec![F::ZERO; 1 << K1_BOUND_LEN];
+            k1.as_ref().iter().for_each(|s| {
+                if let Some(i) = t.iter().position(|e| e == s) {
+                    m[i] += F::ONE;
+                }
+            });
+
+            (t, m)
+        };
+
+        let inputs = chain_par![
+            [s.to_vec(), e.to_vec(), k1.to_vec()],
+            [s_m, s_t],
+            [e_m, e_t],
+            [k1_m, k1_t],
+            ais,
+            r1is,
+            [r2is],
+        ]
+        .map(box_dense_poly)
+        .collect();
 
         let output = box_dense_poly(ct0is);
 
@@ -591,7 +601,7 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
                 EvalClaim::new(point.clone(), value)
             });
 
-            let mut output_claims = vec![EvalClaim::new(vec![], F::ZERO); 1]; // 4 + self.block.num_reps// should be self.block.num_reps * 2 (for r2is range checks)
+            let mut output_claims = vec![EvalClaim::new(vec![], F::ZERO); 4]; // 4 + self.block.num_reps// should be self.block.num_reps * 2 (for r2is range checks)
             output_claims.push(ct0is_claim);
 
             (values, output_claims)
@@ -689,7 +699,7 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
             EvalClaim::new(point, value)
         };
 
-        let mut output_claims = vec![EvalClaim::new(vec![], F::ZERO); 1]; // 4 + self.block.num_reps // should be self.block.num_reps * 2 (for r2is range checks)
+        let mut output_claims = vec![EvalClaim::new(vec![], F::ZERO); 4]; // 4 + self.block.num_reps // should be self.block.num_reps * 2 (for r2is range checks)
         output_claims.push(ct0is_claim);
         // let output_claims = vec![ct0is_claim];
 

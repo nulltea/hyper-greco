@@ -1,31 +1,29 @@
-use fixedbitset::FixedBitSet;
-use std::ops::Range;
-use std::{any::TypeId, fmt::Debug};
-use strum::{EnumCount, IntoEnumIterator};
 use enum_dispatch::enum_dispatch;
+use fixedbitset::FixedBitSet;
 use gkr::{
     ff_ext::{ff::PrimeField, ExtensionField},
     poly::MultilinearPolyTerms,
     util::expression::Expression,
 };
+use std::ops::Range;
+use std::{any::TypeId, fmt::Debug};
+use strum::{EnumCount, IntoEnumIterator};
 
 pub mod range;
 use range::*;
 // for some reason #[enum_dispatch] needs this
 use crate::sk_encryption_circuit::*;
 
-pub type SubtableId = TypeId;
-pub type LookupId = TypeId;
+pub type SubtableId = String;
+pub type LookupId = String;
 
-#[enum_dispatch]
 pub trait LassoSubtable<F: PrimeField, E: ExtensionField<F>>: 'static + Sync + Debug {
     /// Returns the TypeId of this subtable.
     /// The `Jolt` trait has associated enum types `InstructionSet` and `Subtables`.
     /// This function is used to resolve the many-to-many mapping between `InstructionSet` variants
     /// and `Subtables` variants,
-    fn subtable_id(&self) -> SubtableId {
-        TypeId::of::<Self>()
-    }
+    fn subtable_id(&self) -> SubtableId;
+
     /// Fully materializes a subtable of size `M`, reprensented as a Vec of length `M`.
     fn materialize(&self, M: usize) -> Vec<F>;
 
@@ -36,37 +34,14 @@ pub trait LassoSubtable<F: PrimeField, E: ExtensionField<F>>: 'static + Sync + D
     fn evaluate_mle_expr(&self, log2_M: usize) -> MultilinearPolyTerms<F>;
 }
 
-pub trait SubtableSet<F: PrimeField, E: ExtensionField<F>>:
-    LassoSubtable<F, E> + IntoEnumIterator + EnumCount + From<SubtableId> + Send + Sync + Debug
-{
-    fn enum_index(subtable: Box<dyn LassoSubtable<F, E>>) -> usize {
-        let s = Self::from(subtable.subtable_id());
-        let byte = unsafe { *(&s as *const Self as *const u8) };
-        byte as usize
-    }
-}
-
-pub trait CircuitLookups:
-    LookupType + IntoEnumIterator + EnumCount + Send + Sync + std::fmt::Debug + Copy
-{
-    fn enum_index(lookup_type: &Self) -> usize {
-        // Discriminant: https://doc.rust-lang.org/reference/items/enumerations.html#pointer-casting
-        let byte = unsafe { *(lookup_type as *const Self as *const u8) };
-        byte as usize
-    }
-}
-
-#[enum_dispatch]
-pub trait LookupType: Clone + Send + Sync {
-    // /// Returns the TypeId of this lookup type.
-    // fn lookup_id(&self) -> LookupId {
-    //     TypeId::of::<Self>()
-    // }
+pub trait LookupType<F: PrimeField, E: ExtensionField<F>>: 'static + Send + Sync + Debug + LookupClone<F, E> {
+    /// Returns the identifier of this lookup type.
+    fn lookup_id(&self) -> LookupId;
 
     /// The `g` function that computes T[r] = g(T_1[r_1], ..., T_k[r_1], T_{k+1}[r_2], ..., T_{\alpha}[r_c])
-    fn combine_lookups<F: PrimeField>(&self, operands: &[F], C: usize, M: usize) -> F;
+    fn combine_lookups(&self, operands: &[F], C: usize, M: usize) -> F;
 
-    fn combine_lookup_expressions<F: PrimeField, E: ExtensionField<F>>(
+    fn combine_lookup_expressions(
         &self,
         expressions: Vec<Expression<E, usize>>,
         C: usize,
@@ -75,15 +50,12 @@ pub trait LookupType: Clone + Send + Sync {
 
     /// Returns a Vec of the unique subtable types used by this instruction. For some instructions,
     /// e.g. SLL, the list of subtables depends on the dimension `C`.
-    fn subtables<F: PrimeField, E: ExtensionField<F>>(
-        &self,
-        C: usize,
-        M: usize,
-    ) -> Vec<(Box<dyn LassoSubtable<F, E>>, SubtableIndices)>;
+    fn subtables(&self, C: usize, M: usize)
+        -> Vec<(Box<dyn LassoSubtable<F, E>>, SubtableIndices)>;
 
     // fn to_indices<F: PrimeField>(&self, value: &F) -> Vec<usize>;
 
-    fn output<F: PrimeField>(&self, index: &F) -> F;
+    fn output(&self, index: &F) -> F;
 
     fn chunk_bits(&self, M: usize) -> Vec<usize>;
 
@@ -92,6 +64,25 @@ pub trait LookupType: Clone + Send + Sync {
     fn subtable_indices(&self, index_bits: Vec<bool>, log_M: usize) -> Vec<Vec<bool>>;
 
     // fn num_memories(&self) -> usize;
+}
+
+pub trait LookupClone<F, E> {
+    fn clone_box(&self) -> Box<dyn LookupType<F, E>>;
+}
+
+impl<T, F: PrimeField, E: ExtensionField<F>> LookupClone<F, E> for T
+where
+    T: LookupType<F, E> + Clone + 'static,
+{
+    fn clone_box(&self) -> Box<dyn LookupType<F, E>> {
+        Box::new(self.clone())
+    }
+}
+
+impl<F, E> Clone for Box<dyn LookupType<F, E>> {
+    fn clone(&self) -> Self {
+        self.clone_box()
+    }
 }
 
 #[derive(Clone)]
@@ -137,25 +128,4 @@ impl From<Range<usize>> for SubtableIndices {
         let bitset = FixedBitSet::from_iter(range);
         Self { bitset }
     }
-}
-
-#[macro_export]
-macro_rules! subtable_enum {
-    ($enum_name:ident, $($alias:ident: $struct:ty),+) => {
-        #[enum_dispatch(LassoSubtable<F, E>)]
-        #[derive(EnumCount, EnumIter, Debug)]
-        pub enum $enum_name<F: PrimeField, E: ExtensionField<F>> { $($alias($struct)),+ }
-        impl<F: PrimeField, E: ExtensionField<F>> From<SubtableId> for $enum_name<F, E> {
-          fn from(subtable_id: SubtableId) -> Self {
-            $(
-              if subtable_id == TypeId::of::<$struct>() {
-                $enum_name::from(<$struct>::new())
-              } else
-            )+
-            { panic!("Unexpected subtable id {:?}", subtable_id) }
-          }
-        }
-
-        impl<F: PrimeField, E: ExtensionField<F>> SubtableSet<F, E> for $enum_name<F, E> {}
-    };
 }
