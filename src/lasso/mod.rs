@@ -69,6 +69,7 @@ impl<
         box_dense_poly([F::ZERO])
     }
 
+    #[tracing::instrument(skip_all, name = "LassoNode::prove_claim_reduction")]
     fn prove_claim_reduction(
         &self,
         _: CombinedEvalClaim<E>,
@@ -134,6 +135,7 @@ impl<
         Ok(lookup_output_eval_claim)
     }
 
+    #[tracing::instrument(skip_all, name = "LassoNode::verify_claim_reduction")]
     fn verify_claim_reduction(
         &self,
         _: CombinedEvalClaim<E>,
@@ -430,9 +432,6 @@ impl<
 
         let indices = izip!((0..num_rows), &self.lookups)
             .map(|(i, lookup)| {
-                println!("inputs[i]: {:?}", inputs[i]);
-                println!("chunk_bits: {:?}", lookup.chunk_bits(M));
-                println!("inputs[i] > {R2_BOUND_ABS}: {:?}", 13712101976447600 > R2_BOUND_ABS);
                 let mut index_bits = fe_to_bits_le(inputs[i]);
                 index_bits.truncate(lookup.chunk_bits(M).iter().sum());
                 // index_bits.truncate()
@@ -461,7 +460,6 @@ impl<
         lookup_indices
     }
 
-    #[tracing::instrument(skip_all, name = "LassoNode::compute_lookup_outputs")]
     fn compute_lookup_outputs(&self, inputs: &BoxMultilinearPoly<F, E>) -> Vec<F> {
         izip_par!(inputs.as_dense().unwrap(), &self.lookups)
             .map(|(i, lookup)| lookup.output(i))
@@ -575,6 +573,8 @@ pub struct LassoPreprocessing<F: Field, E> {
 }
 
 impl<F: PrimeField, E: ExtensionField<F>> LassoPreprocessing<F, E> {
+
+    #[tracing::instrument(skip_all, name = "LassoNode::preprocess")]
     pub fn preprocess<
         const C: usize,
         const M: usize,

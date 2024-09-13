@@ -12,6 +12,7 @@ use crate::{
     transcript::Keccak256Transcript,
 };
 use enum_dispatch::enum_dispatch;
+use gkr::circuit::node::LogUpNode;
 use gkr::{
     chain_par,
     circuit::{
@@ -185,24 +186,23 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncryptBlock<POLY_LOG2_SIZE> {
             .take(self.num_reps)
             .collect_vec();
 
-        // for (i, &r1i) in r1is.iter().enumerate().take(self.num_reps) {
-        //     let log2_t_size = self.r1i_bound_log2_size()[i];
-        //     let r1i_m = circuit.insert(InputNode::new(log2_t_size, 1));
-        //     let r1i_t = circuit.insert(InputNode::new(log2_t_size, 1));
-        //     let r1i_range = circuit.insert(LogUpNode::new(log2_t_size, log2_size, 1));
+        for (i, &r1i) in r1is.iter().enumerate().take(self.num_reps) {
+            let log2_t_size = self.r1i_bound_log2_size()[i];
+            let r1i_m = circuit.insert(InputNode::new(log2_t_size, 1));
+            let r1i_t = circuit.insert(InputNode::new(log2_t_size, 1));
+            let r1i_range = circuit.insert(LogUpNode::new(log2_t_size, log2_size, 1));
 
-        //     connect!(circuit {
-        //         r1i_range <- r1i_m, r1i_t, r1i;
-        //     });
-        // }
+            connect!(circuit {
+                r1i_range <- r1i_m, r1i_t, r1i;
+            });
+        }
 
         let r1iqis = {
             let r1i_size = 1usize << log2_size;
             let gates = (0..self.num_reps)
                 .flat_map(|i| {
-                    (0..r1i_size).map(move |j| {
-                        relay_mul_const((i, j), F::from_str_vartime(QIS[i]).unwrap())
-                    })
+                    (0..r1i_size)
+                        .map(move |j| relay_mul_const((i, j), F::from_str_vartime(QIS[i]).unwrap()))
                 })
                 .collect_vec();
 
@@ -220,10 +220,10 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncryptBlock<POLY_LOG2_SIZE> {
                 .map(move |j| relay_add_const((0, j), F::from(R2_BOUND)))
                 .collect_vec();
 
-            circuit.insert(VanillaNode::new(1, poly_log2_size, gates, 1))
+            circuit.insert(VanillaNode::new(1, poly_log2_size, gates, self.num_reps))
         };
         let r2is_range = {
-            let num_vars = poly_log2_size + self.num_reps - 1;
+            let num_vars = self.log2_size_with_num_reps(poly_log2_size);
             circuit.insert(LassoNode::<F, E, RangeLookups, C, M>::new(
                 preprocessing,
                 num_vars,
@@ -310,6 +310,10 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncryptBlock<POLY_LOG2_SIZE> {
 
         k1
     }
+
+    fn log2_size_with_num_reps(&self, poly_log2_size: usize) -> usize {
+        poly_log2_size + self.num_reps - 1
+    }
 }
 
 pub struct BfvEncrypt<const POLY_LOG2_SIZE: usize> {
@@ -337,9 +341,7 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
         &self,
         rng: impl RngCore + Clone,
     ) -> (ProverKey<F, E, Pcs>, VerifierKey<F, E, Pcs>) {
-        let lasso_preprocessing = info_span!("lasso preprocessing").in_scope(|| {
-            LassoPreprocessing::<F, E>::preprocess::<C, M, RangeLookups, RangeSubtables<F, E>>()
-        });
+        let lasso_preprocessing = LassoPreprocessing::<F, E>::preprocess::<C, M, RangeLookups, RangeSubtables<F, E>>();
 
         let (comms, pks, vks): (
             Vec<Pcs::Commitment>,
@@ -422,31 +424,86 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
         let e = circuit.insert(InputNode::new(log2_size, 1));
         let k1 = circuit.insert(InputNode::new(log2_size, 1));
 
-        // let s_m = circuit.insert(InputNode::new(2, 1));
-        // let s_t = circuit.insert(InputNode::new(2, 1));
-        // let s_range = circuit.insert(LogUpNode::new(2, log2_size, 1));
+        let s_m = circuit.insert(InputNode::new(2, 1));
+        let s_t = circuit.insert(InputNode::new(2, 1));
+        let s_range = circuit.insert(LogUpNode::new(2, log2_size, 1));
 
-        // let e_m = circuit.insert(InputNode::new(E_BOUND_LEN, 1));
-        // let e_t = circuit.insert(InputNode::new(E_BOUND_LEN, 1));
-        // let e_range = circuit.insert(LogUpNode::new(E_BOUND_LEN, log2_size, 1));
+        let e_m = circuit.insert(InputNode::new(E_BOUND_LEN, 1));
+        let e_t = circuit.insert(InputNode::new(E_BOUND_LEN, 1));
+        let e_range = circuit.insert(LogUpNode::new(E_BOUND_LEN, log2_size, 1));
 
-        // let k1_m = circuit.insert(InputNode::new(K1_BOUND_LEN, 1));
-        // let k1_t = circuit.insert(InputNode::new(K1_BOUND_LEN, 1));
-        // let k1_range = circuit.insert(LogUpNode::new(K1_BOUND_LEN, log2_size, 1));
+        let k1_m = circuit.insert(InputNode::new(K1_BOUND_LEN, 1));
+        let k1_t = circuit.insert(InputNode::new(K1_BOUND_LEN, 1));
+        let k1_range = circuit.insert(LogUpNode::new(K1_BOUND_LEN, log2_size, 1));
 
-        // connect!(circuit {
-        //     s_range <- s_m, s_t, s;
-        //     e_range <- e_m, e_t, e;
-        //     k1_range <- k1_m, k1_t, k1;
-        // });
+        connect!(circuit {
+            s_range <- s_m, s_t, s;
+            e_range <- e_m, e_t, e;
+            k1_range <- k1_m, k1_t, k1;
+        });
 
         self.block.configure(circuit, s, e, k1, preprocessing)
+    }
+
+    pub fn get_inputs<F: PrimeField, E: ExtensionField<F>>(
+        &self,
+        args: &BfvSkEncryptArgs,
+    ) -> (
+        Vec<BoxMultilinearPoly<'static, F, E>>,
+        BoxMultilinearPoly<'static, F, E>,
+    ) {
+        let log2_size = self.log2_size();
+
+        let s = Poly::<F>::new_padded(args.s.clone(), log2_size);
+        let e = Poly::<F>::new_shifted(args.e.clone(), (1 << log2_size) - 1);
+        let k1 = Poly::<F>::new_shifted(args.k1.clone(), (1 << log2_size) - 1);
+
+        let mut r2is = vec![];
+        let mut r1is = vec![];
+        let mut ais = vec![];
+        let mut ct0is = vec![];
+
+        for z in 0..min(args.ct0is.len(), self.block.num_reps) {
+            let r2i = Poly::<F>::new(args.r2is[z].clone());
+            r2is.push(r2i.to_vec());
+
+            let r1i = Poly::<F>::new_padded(args.r1is[z].clone(), log2_size);
+            r1is.push(r1i.to_vec());
+
+            let ai = Poly::<F>::new_padded(args.ais[z].clone(), log2_size);
+            ais.push(ai.to_vec());
+
+            let ct0i = Poly::<F>::new_shifted(args.ct0is[z].clone(), 1 << log2_size);
+            let mut ct0i = ct0i.as_ref()[1..].to_vec();
+            ct0i.push(F::ZERO);
+            ct0is.extend(ct0i);
+        }
+
+        let r2is = r2is
+            .into_iter()
+            .take(self.block.num_reps)
+            .flat_map(|mut r2i| {
+                r2i.push(F::ZERO);
+                r2i
+            })
+            .collect_vec();
+
+        let inputs = chain_par![[s.to_vec(), e.to_vec(), k1.to_vec()], ais, r1is, [r2is],]
+            .map(box_dense_poly)
+            .collect();
+
+        let output = box_dense_poly(ct0is);
+
+        (inputs, output)
     }
 
     pub fn gen_values<F: PrimeField, E: ExtensionField<F>>(
         &self,
         args: &BfvSkEncryptArgs,
-    ) -> Vec<BoxMultilinearPoly<'static, F, E>> where F::Repr: Into<u64>{
+    ) -> Vec<BoxMultilinearPoly<'static, F, E>>
+    where
+        F::Repr: Into<u64>,
+    {
         let log2_size = self.log2_size();
 
         let s = Poly::<F>::new_padded(args.s.clone(), log2_size);
@@ -628,33 +685,15 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
             .flat_map(|(m, t)| [m, t, vec![F::ZERO]])
             .collect_vec();
 
-        // too large - need to split in mulitple lookup tables or use Lasso
-        // let (r2is_t, r2is_m) = {
-        //     let bound_log2 = self.block.r2i_bound_log2_size();
-        //     println!("bound_log2 {:?}", bound_log2);
-        //     let mut t = (0..=max(R2_BOUNDS[0], R2_BOUNDS[1]))
-        //         .flat_map(|b| [F::ZERO - F::from(b), F::from(b)])
-        //         .collect_vec();
-        //     t.resize(1 << self.block.r2i_bound_log2_size(), F::ZERO);
-        //     let mut m = vec![F::ZERO; 1 << self.block.r2i_bound_log2_size()];
-        //     r2is.iter().for_each(|s| {
-        //         if let Some(i) = t.iter().position(|e| e == s) {
-        //             m[i] += F::ONE;
-        //         }
-        //     });
-
-        //     (t, m)
-        // };
-
         chain_par![
             [s.to_vec(), e.to_vec(), k1.to_vec()],
-            // [s_m, s_t, vec![F::ZERO]],   // s_range
-            // [e_m, e_t, vec![F::ZERO]],   // e_range
-            // [k1_m, k1_t, vec![F::ZERO]], // k1_range
+            [s_m, s_t, vec![F::ZERO]],   // s_range
+            [e_m, e_t, vec![F::ZERO]],   // e_range
+            [k1_m, k1_t, vec![F::ZERO]], // k1_range
             [es, k1k0is],
             ais,
             r1is,
-            // r1i_range_values, // r1i_range
+            r1i_range_values, // r1i_range
             [r1iqis],
             [r2is, r2is_shifted, vec![F::ZERO]],
             // [r2is],
@@ -681,7 +720,10 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
         &self,
         args: &BfvSkEncryptArgs,
         pk: ProverKey<F, F, Pcs>,
-    ) -> Vec<u8> where F::Repr: Into<u64> {
+    ) -> Vec<u8>
+    where
+        F::Repr: Into<u64>,
+    {
         let (preprocessing, pk) = pk;
         let mut transcript = Keccak256Transcript::<Vec<u8>>::default();
 
@@ -690,16 +732,25 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
             self.configure(&mut circuit, preprocessing);
             circuit
         };
-        let values = info_span!("wintess gen").in_scope(|| self.gen_values::<F, F>(args));
+        let (values, output_claims) = info_span!("wintess gen").in_scope(|| {
+            let (inputs, ctis_poly) =
+                info_span!("parse inputs").in_scope(|| self.get_inputs::<F, F>(args));
 
-        let ct0is_claim = {
-            let point = transcript.squeeze_challenges(self.ct0is_log2_size());
-            let value = values.last().unwrap().evaluate(&point);
-            EvalClaim::new(point.clone(), value)
-        };
+            // let values = info_span!("eval circuit").in_scope(|| circuit.evaluate(inputs));
 
-        let mut output_claims = vec![EvalClaim::new(vec![], F::ZERO); 1]; // 4 + self.block.num_reps// should be self.block.num_reps * 2 (for r2is range checks)
-        output_claims.push(ct0is_claim);
+            let values = info_span!("gen values").in_scope(|| self.gen_values::<F, F>(args));
+
+            let ct0is_claim = info_span!("eval output").in_scope(|| {
+                let point = transcript.squeeze_challenges(self.ct0is_log2_size());
+                let value = ctis_poly.evaluate(&point);
+                EvalClaim::new(point.clone(), value)
+            });
+
+            let mut output_claims = vec![EvalClaim::new(vec![], F::ZERO); 4 + self.block.num_reps]; // 4 + self.block.num_reps// should be self.block.num_reps * 2 (for r2is range checks)
+            output_claims.push(ct0is_claim);
+
+            (values, output_claims)
+        });
 
         let claims = info_span!("GKR prove")
             .in_scope(|| gkr::prove_gkr(&circuit, &values, &output_claims, &mut transcript))
@@ -789,10 +840,11 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
                     .collect_vec(),
             );
             let value = ct0is.evaluate(&point);
+            
             EvalClaim::new(point, value)
         };
 
-        let mut output_claims = vec![EvalClaim::new(vec![], F::ZERO); 1]; // 4 + self.block.num_reps // should be self.block.num_reps * 2 (for r2is range checks)
+        let mut output_claims = vec![EvalClaim::new(vec![], F::ZERO); 4 + self.block.num_reps]; // 4 + self.block.num_reps // should be self.block.num_reps * 2 (for r2is range checks)
         output_claims.push(ct0is_claim);
         // let output_claims = vec![ct0is_claim];
 
@@ -920,7 +972,7 @@ mod test {
         let mut file = File::open(file_path).unwrap();
         let mut data = String::new();
         file.read_to_string(&mut data).unwrap();
-        let bfv = BfvEncrypt::<10>::new(1);
+        let bfv = BfvEncrypt::<10>::new(2);
         let args = serde_json::from_str::<BfvSkEncryptArgs>(&data).unwrap();
 
         let (pk, vk) = info_span!("setup")
