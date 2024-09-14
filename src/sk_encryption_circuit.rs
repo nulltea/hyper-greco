@@ -1,4 +1,4 @@
-pub use crate::constants::sk_enc_constants_1024_2x55_65537::{
+pub use crate::constants::sk_enc_constants_1024_4x55_65537::{
     E_BOUND, K0IS, K1_BOUND, N, QIS, R1_BOUNDS, R2_BOUNDS,
 };
 use crate::{constants::sk_enc_constants_1024_1x27_65537::S_BOUND, lasso::LassoPreprocessing};
@@ -33,17 +33,13 @@ use plonkish_backend::util::code::BrakedownSpec6;
 use plonkish_backend::util::hash::{Keccak256, Output};
 use rand::RngCore;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use rayon::vec;
 use serde::Deserialize;
-use std::any::TypeId;
 use std::cmp::min;
 use std::iter;
-use strum_macros::{EnumCount, EnumIter};
 use tracing::info_span;
 
 const E_BOUND_LEN: usize = (2 * E_BOUND + 1).next_power_of_two().ilog2() as usize;
 const K1_BOUND_LEN: usize = (2 * K1_BOUND + 1).next_power_of_two().ilog2() as usize;
-pub const R2_BOUND: u64 = R2_BOUNDS[0];
 
 const LIMB_BITS: usize = 16;
 const C: usize = 4;
@@ -196,50 +192,66 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncryptBlock<POLY_LOG2_SIZE> {
 
         let r2is = circuit.insert(InputNode::new(poly_log2_size, self.num_reps));
 
-        let lasso_inputs_batched = {
-            let r2i_log2_size = self.log2_size_with_num_reps(poly_log2_size);
-            let r1i_size = 1usize << log2_size;
-            let gates = chain![
-                R1_BOUNDS.iter().enumerate().flat_map(|(i, &bound)| {
-                    (0..r1i_size).map(move |j| relay_add_const((i, j), F::from(bound)))
-                }),
-                (0..(1usize << r2i_log2_size))
-                    .map(move |j| relay_add_const((2, j), F::from(R2_BOUND))),
-                (0..(1usize << log2_size)).map(move |j| relay_add_const((3, j), F::from(S_BOUND))),
-                (0..(1usize << log2_size)).map(move |j| relay_add_const((4, j), F::from(E_BOUND))),
-                (0..(1usize << log2_size)).map(move |j| relay_add_const((5, j), F::from(K1_BOUND))),
-                (0..(1usize << log2_size)).map(move |j| VanillaGate::constant(F::ZERO)),
-            ]
+        let num_r2is_chunks =
+            (1 << self.log2_size_with_num_reps(poly_log2_size)) / (1 << log2_size);
+        let r1is_chunks = iter::repeat_with(|| circuit.insert(InputNode::new(log2_size, 1)))
+            .take(num_r2is_chunks)
             .collect_vec();
 
-            circuit.insert(VanillaNode::new(6, log2_size, gates, 1))
+        let lasso_inputs_batched = {
+            let max_log2_size = self.log2_size_with_num_reps(poly_log2_size);
+            let gates = chain![
+                R1_BOUNDS.iter().take(self.num_reps).copied(),
+                iter::repeat(R2_BOUNDS[0]).take(num_r2is_chunks),
+                vec![S_BOUND, E_BOUND, K1_BOUND],
+            ]
+            .enumerate()
+            .flat_map(|(i, bound)| {
+                (0..(1usize << log2_size)).map(move |j| relay_add_const((i, j), F::from(bound)))
+            })
+            .collect_vec();
+
+            circuit.insert(VanillaNode::new(
+                3 + self.num_reps + num_r2is_chunks,
+                log2_size,
+                gates,
+                1,
+            ))
         };
         let r2is_range = {
-            let r1is_log2_size = log2_size; // self.log2_size_with_num_reps(log2_size);
-            let r2is_log2_size = self.log2_size_with_num_reps(poly_log2_size);
-            let num_vars = log2_size + 3;
+            // let r2is_log2_size = self.log2_size_with_num_reps(poly_log2_size);
+            let lookups = chain![
+                R1_BOUNDS
+                    .iter()
+                    .flat_map(|&bound| iter::repeat(RangeLookup::id_for(bound * 2 + 1))
+                        .take(1 << log2_size)),
+                R2_BOUNDS
+                    .iter()
+                    .flat_map(|&bound| iter::repeat(RangeLookup::id_for(bound * 2 + 1))
+                        .take(1 << poly_log2_size)),
+                iter::repeat(RangeLookup::id_for(S_BOUND * 2 + 1)).take(1 << log2_size),
+                iter::repeat(RangeLookup::id_for(E_BOUND * 2 + 1)).take(1 << log2_size),
+                iter::repeat(RangeLookup::id_for(K1_BOUND * 2 + 1)).take(1 << log2_size),
+            ]
+            .collect_vec();
+            let num_vars = lookups.len().next_power_of_two().ilog2() as usize;
             circuit.insert(LassoNode::<F, E, C, M>::new(
                 preprocessing,
                 num_vars,
-                chain![
-                    R1_BOUNDS
-                        .iter()
-                        .flat_map(|&bound| iter::repeat(RangeLookup::id_for(bound * 2 + 1))
-                            .take(1 << r1is_log2_size)),
-                    iter::repeat(RangeLookup::id_for(R2_BOUND * 2 + 1)).take(1 << r2is_log2_size),
-                    iter::repeat(RangeLookup::id_for(S_BOUND * 2 + 1)).take(1 << log2_size),
-                    iter::repeat(RangeLookup::id_for(E_BOUND * 2 + 1)).take(1 << log2_size),
-                    iter::repeat(RangeLookup::id_for(K1_BOUND * 2 + 1)).take(1 << log2_size),
-                ]
-                .collect_vec(),
+                lookups,
             ))
         };
         r1is.iter()
             .take(self.num_reps)
             .for_each(|&r1i| circuit.connect(r1i, lasso_inputs_batched));
 
+        r1is_chunks
+            .iter()
+            .take(self.num_reps)
+            .for_each(|&r2i| circuit.connect(r2i, lasso_inputs_batched));
+
         connect!(circuit {
-            lasso_inputs_batched <- r2is, s, e, k1;
+            lasso_inputs_batched <- s, e, k1;
             r2is_range <- lasso_inputs_batched;
         });
 
@@ -316,7 +328,7 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncryptBlock<POLY_LOG2_SIZE> {
     }
 
     fn log2_size_with_num_reps(&self, poly_log2_size: usize) -> usize {
-        poly_log2_size + self.num_reps - 1
+        poly_log2_size + self.num_reps.ilog2() as usize
     }
 }
 
@@ -349,10 +361,12 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
             [
                 RangeLookup::new_boxed(S_BOUND * 2 + 1),
                 RangeLookup::new_boxed(E_BOUND * 2 + 1),
-                RangeLookup::new_boxed(K1_BOUND * 2 + 1),
-                RangeLookup::new_boxed(R2_BOUND * 2 + 1),
+                RangeLookup::new_boxed(K1_BOUND * 2 + 1)
             ],
             R1_BOUNDS
+                .iter()
+                .map(|&bound| RangeLookup::new_boxed(bound * 2 + 1)),
+            R2_BOUNDS
                 .iter()
                 .map(|&bound| RangeLookup::new_boxed(bound * 2 + 1))
         ]);
@@ -505,6 +519,11 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
             })
             .collect_vec();
 
+        let r2is_chanked = r2is
+            .chunks(1 << log2_size)
+            .map(|r2i| r2i.to_vec())
+            .collect_vec();
+
         let (s_t, s_m) = {
             let t = [F::ZERO, F::ONE, F::ZERO - F::ONE, F::ZERO];
             let mut m = [F::ZERO; 4];
@@ -555,6 +574,7 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
             ais,
             r1is,
             [r2is],
+            r2is_chanked
         ]
         .map(box_dense_poly)
         .collect();
@@ -818,16 +838,11 @@ mod test {
 
         let rng = seeded_std_rng();
 
-        // println!(
-        //     "r2i_bound_log2_size {}",
-        //     BfvEncryptBlock::r2i_bound_log2_size()
-        // );
-
-        let file_path = "src/data/sk_enc_1024_2x55_65537.json";
+        let file_path = "src/data/sk_enc_1024_4x55_65537.json";
         let mut file = File::open(file_path).unwrap();
         let mut data = String::new();
         file.read_to_string(&mut data).unwrap();
-        let bfv = BfvEncrypt::<10>::new(2);
+        let bfv = BfvEncrypt::<10>::new(4);
         let args = serde_json::from_str::<BfvSkEncryptArgs>(&data).unwrap();
 
         let (pk, vk) = info_span!("setup")

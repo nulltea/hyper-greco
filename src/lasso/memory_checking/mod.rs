@@ -103,11 +103,6 @@ impl<'a, F: PrimeField, E: ExtensionField<F>> Chunk<'a, F, E> {
         let chunk_bits = self.chunk_bits();
         let num_reads = self.num_reads();
         assert_eq!(chunk_bits, memory.subtable_poly.num_vars());
-        println!(
-            "num_reads: {}, memory.e_poly.num_vars(): {}",
-            num_reads,
-            memory.e_poly.num_vars()
-        );
         assert_eq!(num_reads, 1 << memory.e_poly.num_vars());
 
         self.memories.push(memory);

@@ -340,7 +340,6 @@ impl<F: PrimeField, E: ExtensionField<F>, const C: usize, const M: usize> LassoN
         });
         memories.enumerate().for_each(|(memory_index, memory)| {
             let chunk_index = preprocessing.memory_to_dimension_index[memory_index];
-            println!("memory_index: {memory_index} chunk_index {chunk_index}",);
             if let std::collections::hash_map::Entry::Vacant(e) = chunk_map.entry(chunk_index) {
                 let dim = &dims[chunk_index];
                 let read_ts_poly = &read_ts_polys[chunk_index];
