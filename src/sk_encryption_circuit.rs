@@ -1,6 +1,4 @@
-pub use crate::constants::sk_enc_constants_16384_8x54_65537::{
-    E_BOUND, K0IS, K1_BOUND, N, QIS, R1_BOUNDS, R2_BOUNDS, S_BOUND,
-};
+use crate::constants::BfvSkEncryptConstans;
 use crate::lasso::LassoPreprocessing;
 use crate::{
     lasso::{table::range::RangeLookup, LassoNode},
@@ -22,10 +20,8 @@ use gkr::{
     verify_gkr,
 };
 use itertools::chain;
-use plonkish_backend::pcs::multilinear::MultilinearBrakedown;
 use plonkish_backend::pcs::PolynomialCommitmentScheme;
 use plonkish_backend::poly::multilinear::MultilinearPolynomial;
-use plonkish_backend::util::code::BrakedownSpec6;
 use plonkish_backend::util::hash::{Keccak256, Output};
 use rand::RngCore;
 use rayon::iter::ParallelIterator;
@@ -37,9 +33,6 @@ use tracing::info_span;
 const LIMB_BITS: usize = 16;
 const C: usize = 4;
 const M: usize = 1 << LIMB_BITS;
-
-pub type Brakedown<F> =
-    MultilinearBrakedown<F, plonkish_backend::util::hash::Keccak256, BrakedownSpec6>;
 
 pub type ProverKey<
     F,
@@ -83,26 +76,14 @@ pub struct BfvSkEncryptArgs {
     ct0is: Vec<Vec<String>>,
 }
 
-pub struct BfvEncryptBlock<const POLY_LOG2_SIZE: usize> {
+pub struct BfvEncryptBlock<Params: BfvSkEncryptConstans<K>, const K: usize> {
     num_reps: usize,
+    _marker: std::marker::PhantomData<Params>,
 }
 
-impl<const POLY_LOG2_SIZE: usize> BfvEncryptBlock<POLY_LOG2_SIZE> {
+impl<Params: BfvSkEncryptConstans<K>, const K: usize> BfvEncryptBlock<Params, K> {
     pub const fn log2_size(&self) -> usize {
-        POLY_LOG2_SIZE + 1
-    }
-
-    pub const fn r2i_bound_log2_size() -> usize {
-        // (2 * R2_BOUNDS[0] + 1).next_power_of_two().ilog2() as usize
-        64
-    }
-
-    pub fn r1i_bound_log2_size(&self) -> Vec<usize> {
-        R1_BOUNDS
-            .into_iter()
-            .take(self.num_reps)
-            .map(|b| (2 * b + 1).next_power_of_two().ilog2() as usize)
-            .collect()
+        Params::N_LOG2 + 1
     }
 
     // single block
@@ -114,7 +95,7 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncryptBlock<POLY_LOG2_SIZE> {
         k1: NodeId,
         preprocessing: LassoPreprocessing<F, E>,
     ) -> NodeId {
-        let poly_log2_size = POLY_LOG2_SIZE;
+        let poly_log2_size = Params::N_LOG2;
         let log2_size = self.log2_size();
 
         let es = {
@@ -129,7 +110,7 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncryptBlock<POLY_LOG2_SIZE> {
             let gates = (0..self.num_reps)
                 .flat_map(|i| {
                     (0..(1usize << log2_size)).map(move |j| {
-                        relay_mul_const((0, j), F::from_str_vartime(K0IS[i]).unwrap())
+                        relay_mul_const((0, j), F::from_str_vartime(Params::K0IS[i]).unwrap())
                     })
                 })
                 .collect_vec();
@@ -154,8 +135,9 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncryptBlock<POLY_LOG2_SIZE> {
             let r1i_size = 1usize << log2_size;
             let gates = (0..self.num_reps)
                 .flat_map(|i| {
-                    (0..r1i_size)
-                        .map(move |j| relay_mul_const((i, j), F::from_str_vartime(QIS[i]).unwrap()))
+                    (0..r1i_size).map(move |j| {
+                        relay_mul_const((i, j), F::from_str_vartime(Params::QIS[i]).unwrap())
+                    })
                 })
                 .collect_vec();
 
@@ -168,17 +150,25 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncryptBlock<POLY_LOG2_SIZE> {
 
         let r2is = circuit.insert(InputNode::new(poly_log2_size, self.num_reps));
 
-        let num_r2is_chunks =
-            (1 << self.log2_size_with_num_reps(poly_log2_size)) / (1 << log2_size);
-        let r2is_chunks = iter::repeat_with(|| circuit.insert(InputNode::new(log2_size, 1)))
-            .take(num_r2is_chunks)
+        let r2is_log2_sise = self.log2_size_with_num_reps(poly_log2_size);
+        let r2is_chunks = (0..1 << r2is_log2_sise)
+            .chunks(1 << log2_size)
+            .into_iter()
+            .map(|chunk| {
+                let mut gates = chunk.map(move |j| VanillaGate::relay((0, j))).collect_vec();
+                gates.resize(1 << log2_size, VanillaGate::constant(F::ZERO));
+
+                let node = circuit.insert(VanillaNode::new(1, r2is_log2_sise, gates, 1));
+                circuit.connect(r2is, node);
+                node
+            })
             .collect_vec();
 
         let lasso_inputs_batched = {
             let gates = chain![
-                R1_BOUNDS.iter().take(self.num_reps).copied(),
-                iter::repeat(R2_BOUNDS[0]).take(num_r2is_chunks),
-                vec![S_BOUND, E_BOUND, K1_BOUND],
+                Params::R1_BOUNDS.iter().take(self.num_reps).copied(),
+                iter::repeat(Params::R2_BOUNDS[0]).take(r2is_chunks.len()),
+                vec![Params::S_BOUND, Params::E_BOUND, Params::K1_BOUND],
             ]
             .enumerate()
             .flat_map(|(i, bound)| {
@@ -187,27 +177,32 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncryptBlock<POLY_LOG2_SIZE> {
             .collect_vec();
 
             circuit.insert(VanillaNode::new(
-                num_r2is_chunks + self.num_reps + 3,
+                r2is_chunks.len() + self.num_reps + 3,
                 log2_size,
                 gates,
                 1,
             ))
         };
         let lasso_ranges = {
+            let r2i_log2_size = if self.num_reps == 1 {
+                log2_size // since zero-padded to log2_size in r2is_chunks
+            } else {
+                poly_log2_size
+            };
             let lookups = chain![
-                R1_BOUNDS
+                Params::R1_BOUNDS
                     .iter()
                     .take(self.num_reps)
                     .flat_map(|&bound| iter::repeat(RangeLookup::id_for(bound * 2 + 1))
                         .take(1 << log2_size)),
-                R2_BOUNDS
+                Params::R2_BOUNDS
                     .iter()
                     .take(self.num_reps)
                     .flat_map(|&bound| iter::repeat(RangeLookup::id_for(bound * 2 + 1))
-                        .take(1 << poly_log2_size)),
-                iter::repeat(RangeLookup::id_for(S_BOUND * 2 + 1)).take(1 << log2_size),
-                iter::repeat(RangeLookup::id_for(E_BOUND * 2 + 1)).take(1 << log2_size),
-                iter::repeat(RangeLookup::id_for(K1_BOUND * 2 + 1)).take(1 << log2_size),
+                        .take(1 << r2i_log2_size)),
+                iter::repeat(RangeLookup::id_for(Params::S_BOUND * 2 + 1)).take(1 << log2_size),
+                iter::repeat(RangeLookup::id_for(Params::E_BOUND * 2 + 1)).take(1 << log2_size),
+                iter::repeat(RangeLookup::id_for(Params::K1_BOUND * 2 + 1)).take(1 << log2_size),
             ]
             .collect_vec();
             let num_vars = lookups.len().next_power_of_two().ilog2() as usize;
@@ -223,7 +218,6 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncryptBlock<POLY_LOG2_SIZE> {
 
         r2is_chunks
             .iter()
-            .take(self.num_reps)
             .for_each(|&r2i| circuit.connect(r2i, lasso_inputs_batched));
 
         connect!(circuit {
@@ -307,19 +301,22 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncryptBlock<POLY_LOG2_SIZE> {
     }
 }
 
-pub struct BfvEncrypt<const POLY_LOG2_SIZE: usize> {
-    block: BfvEncryptBlock<POLY_LOG2_SIZE>,
+pub struct BfvEncrypt<Params: BfvSkEncryptConstans<K>, const K: usize> {
+    block: BfvEncryptBlock<Params, K>,
 }
 
-impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
+impl<Params: BfvSkEncryptConstans<K>, const K: usize> BfvEncrypt<Params, K> {
     pub fn new(num_reps: usize) -> Self {
         Self {
-            block: BfvEncryptBlock { num_reps },
+            block: BfvEncryptBlock {
+                num_reps,
+                _marker: std::marker::PhantomData,
+            },
         }
     }
 
     pub const fn log2_size(&self) -> usize {
-        POLY_LOG2_SIZE + 1
+        Params::N_LOG2 + 1
     }
 
     #[allow(clippy::type_complexity)]
@@ -333,15 +330,15 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
     ) -> (ProverKey<F, E>, VerifierKey<F, E>) {
         let mut lasso_preprocessing = LassoPreprocessing::<F, E>::preprocess::<C, M>(chain![
             [
-                RangeLookup::new_boxed(S_BOUND * 2 + 1),
-                RangeLookup::new_boxed(E_BOUND * 2 + 1),
-                RangeLookup::new_boxed(K1_BOUND * 2 + 1)
+                RangeLookup::new_boxed(Params::S_BOUND * 2 + 1),
+                RangeLookup::new_boxed(Params::E_BOUND * 2 + 1),
+                RangeLookup::new_boxed(Params::K1_BOUND * 2 + 1)
             ],
-            R1_BOUNDS
+            Params::R1_BOUNDS
                 .iter()
                 .take(self.block.num_reps)
                 .map(|&bound| RangeLookup::new_boxed(bound * 2 + 1)),
-            R2_BOUNDS
+            Params::R2_BOUNDS
                 .iter()
                 .take(self.block.num_reps)
                 .map(|&bound| RangeLookup::new_boxed(bound * 2 + 1))
@@ -412,20 +409,9 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
             })
             .collect_vec();
 
-        let r2is_chunked = r2is
-            .chunks(1 << log2_size)
-            .map(|r2i| r2i.to_vec())
-            .collect_vec();
-
-        let inputs = chain_par![
-            [s.to_vec(), e.to_vec(), k1.to_vec()],
-            ais,
-            r1is,
-            [r2is],
-            r2is_chunked
-        ]
-        .map(box_dense_poly)
-        .collect();
+        let inputs = chain_par![[s.to_vec(), e.to_vec(), k1.to_vec()], ais, r1is, [r2is],]
+            .map(box_dense_poly)
+            .collect();
 
         let output = box_dense_poly(ct0is);
 
@@ -549,49 +535,29 @@ fn relay_add_const<F>(w: (usize, usize), c: F) -> VanillaGate<F> {
 
 #[cfg(test)]
 mod test {
+    use crate::generate_sk_enc_test;
+
     use super::*;
     use gkr::util::dev::seeded_std_rng;
     use goldilocks::Goldilocks;
 
+    use paste::paste;
+    use plonkish_backend::{pcs::multilinear::MultilinearBrakedown, util::code::BrakedownSpec6};
     use std::{fs::File, io::Read};
-    use tracing::{info_span, level_filters::LevelFilter};
+    use tracing::info_span;
     use tracing_forest::ForestLayer;
-    use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Registry};
+    use tracing_subscriber::{layer::SubscriberExt, EnvFilter, Registry};
 
-    // type F = bn256::Fr;
-    type F = Goldilocks;
+    pub type Brakedown<F> =
+        MultilinearBrakedown<F, plonkish_backend::util::hash::Keccak256, BrakedownSpec6>;
 
-    const N: usize = 14;
-    const K: usize = 8;
+    generate_sk_enc_test!(goldilocks, Goldilocks, Brakedown<Goldilocks>, 1024, 1, 27);
 
-    #[test]
-    pub fn test_sk_enc_valid() {
-        let env_filter = EnvFilter::builder()
-            .with_default_directive(LevelFilter::INFO.into())
-            .from_env_lossy();
+    generate_sk_enc_test!(goldilocks, Goldilocks, Brakedown<Goldilocks>, 2048, 1, 52);
 
-        Registry::default()
-            .with(env_filter)
-            .with(ForestLayer::default())
-            .init();
+    generate_sk_enc_test!(goldilocks, Goldilocks, Brakedown<Goldilocks>, 4096, 2, 55);
 
-        let rng = seeded_std_rng();
+    generate_sk_enc_test!(goldilocks, Goldilocks, Brakedown<Goldilocks>, 8192, 4, 55);
 
-        let file_path = format!("src/data/sk_enc_{}_{K}x54_65537.json", 1 << N);
-        let mut file = File::open(file_path).unwrap();
-        let mut data = String::new();
-        file.read_to_string(&mut data).unwrap();
-        let bfv = BfvEncrypt::<N>::new(K);
-        let args = serde_json::from_str::<BfvSkEncryptArgs>(&data).unwrap();
-
-        let (pk, vk) =
-            info_span!("setup").in_scope(|| bfv.setup::<F, F, Brakedown<F>>(rng.clone()));
-        let proof =
-            info_span!("FHE_enc prove").in_scope(|| bfv.prove::<F, Brakedown<F>>(&args, pk));
-
-        let (inputs, _) = info_span!("parse inputs").in_scope(|| bfv.get_inputs::<F, F>(&args));
-
-        info_span!("FHE_enc verify")
-            .in_scope(|| bfv.verify::<F, Brakedown<F>>(vk, inputs, &proof, args.ct0is));
-    }
+    generate_sk_enc_test!(goldilocks, Goldilocks, Brakedown<Goldilocks>, 16384, 8, 54);
 }

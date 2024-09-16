@@ -35,7 +35,6 @@ pub mod table;
 pub struct LassoNode<F: Field, E, const C: usize, const M: usize> {
     num_vars: usize,
     preprocessing: LassoPreprocessing<F, E>,
-    // inputs_arity: usize,
     lookups: Vec<LookupId>,
 }
 
@@ -79,8 +78,6 @@ impl<F: PrimeField, E: ExtensionField<F>, const C: usize, const M: usize> Node<F
         } = polys;
 
         assert!(inputs[0].to_dense() == lookup_outputs.to_dense());
-
-        // let [e_polys, dims, read_ts_polys, final_cts_polys] = polys;
 
         let num_vars = lookup_outputs.num_vars();
         assert_eq!(num_vars, self.num_vars);

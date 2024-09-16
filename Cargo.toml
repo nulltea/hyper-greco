@@ -26,6 +26,8 @@ paste = "1.0"
 seq-macro = "0.2"
 
 [dev-dependencies]
+paste = "1.0"
+serial_test = "3.1"
 gkr = { git = "https://github.com/han0110/gkr", features = ["dev"] }
 criterion = "0.5.1"
 goldilocks = { git = "https://github.com/han0110/goldilocks", branch = "feature/qe_op_b" }
@@ -69,7 +71,8 @@ panic = "abort"
 incremental = false
 
 [patch."https://github.com/han0110/gkr"]
-gkr = { git = "https://github.com/nulltea/gkr-lasso" }
+# gkr = { git = "https://github.com/nulltea/gkr-lasso" }
+gkr = { path = "../examples/gkr/gkr" }
 
 [patch."https://github.com/han0110/goldilocks"]
 goldilocks = { git = "https://github.com/nulltea/goldilocks", branch = "to_canonical_repr" }

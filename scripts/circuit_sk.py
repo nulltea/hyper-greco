@@ -437,25 +437,23 @@ def main(args):
 
     output_path = os.path.join("src", "constants", f"sk_enc_constants_{args.n}_{qis_len}x{qis_bitsize}_{args.t}.rs")
 
+    type_name = f"SkEnc{args.n}_{qis_len}x{qis_bitsize}_{args.t}"
     with open(output_path, 'w') as f:
-        f.write(f"/// `N` is the degree of the cyclotomic polynomial defining the ring `Rq = Zq[X]/(X^N + 1)`.\n")
-        f.write(f"pub const N: usize = {n};\n")
-        f.write(f"/// The coefficients of the polynomial `e` should exist in the interval `[-E_BOUND, E_BOUND]` where `E_BOUND` is the upper bound of the gaussian distribution with 𝜎 = 3.2\n")
-        f.write(f"pub const E_BOUND: u64 = {b};\n")
-        f.write(f"/// The coefficients of the polynomial `s` should exist in the interval `[-S_BOUND, S_BOUND]`.\n")
-        f.write(f"pub const S_BOUND: u64 = {1};\n")
-        f.write(f"/// The coefficients of the polynomials `r1is` should exist in the interval `[-R1_BOUND[i], R1_BOUND[i]]` where `R1_BOUND[i]` is equal to `(qi-1)/2`\n")
-        f.write(f"pub const R1_BOUNDS: [u64; {len(r1_bounds)}] = [{', '.join(map(str, r1_bounds))}];\n")
-        f.write(f"/// The coefficients of the polynomials `r2is` should exist in the interval `[-R2_BOUND[i], R2_BOUND[i]]` where `R2_BOUND[i]` is equal to $\\frac{{(N+2) \\cdot \\frac{{q_i - 1}}{{2}} + B + \\frac{{t - 1}}{{2}} \\cdot |K_{{0,i}}|}}{{q_i}}$\n")
-        f.write(f"pub const R2_BOUNDS: [u64; {len(r2_bounds)}] = [{', '.join(map(str, r2_bounds))}];\n")
-        f.write(f"/// The coefficients of `k1` should exist in the interval `[-K1_BOUND, K1_BOUND]` where `K1_BOUND` is equal to `(t-1)/2`\n")
-        f.write(f"pub const K1_BOUND: u64 = {k1_bound};\n")
+        f.write(f"use super::BfvSkEncryptConstans;\n\n")
+        f.write(f"pub struct {type_name};\n\n")
+        f.write(f"impl BfvSkEncryptConstans<{qis_len}> for {type_name}" + " {\n")
+        f.write(f"    const N: usize = {n};\n")
+        f.write(f"    const E_BOUND: u64 = {b};\n")
+        f.write(f"    const S_BOUND: u64 = {1};\n")
+        f.write(f"    const R1_BOUNDS: [u64; {len(r1_bounds)}] = [{', '.join(map(str, r1_bounds))}];\n")
+        f.write(f"    const R2_BOUNDS: [u64; {len(r2_bounds)}] = [{', '.join(map(str, r2_bounds))}];\n")
+        f.write(f"    const K1_BOUND: u64 = {k1_bound};\n")
         qis_str = ', '.join(f'"{q}"' for q in qi_constants)
-        f.write(f"/// List of scalars `qis` such that `qis[i]` is the modulus of the i-th CRT basis of `q` (ciphertext space modulus)\n")
-        f.write(f"pub const QIS: [&str; {len(qi_constants)}] = [{qis_str}];\n")
+        f.write(f"    const QIS: [&'static str; {len(qi_constants)}] = [{qis_str}];\n")
         k0is_str = ', '.join(f'"{k0i}"' for k0i in k0i_constants)
-        f.write(f"/// List of scalars `k0is` such that `k0i[i]` is equal to the negative of the multiplicative inverses of t mod qi.\n")
-        f.write(f"pub const K0IS: [&str; {len(k0i_constants)}] = [{k0is_str}];\n")
+        f.write(f"    const K0IS: [&'static str; {len(k0i_constants)}] = [{k0is_str}];\n")
+        f.write("}\n")
+
 
 
 if __name__ == "__main__":
