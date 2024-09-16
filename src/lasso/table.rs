@@ -17,7 +17,7 @@ use crate::sk_encryption_circuit::*;
 pub type SubtableId = String;
 pub type LookupId = String;
 
-pub trait LassoSubtable<F: PrimeField, E: ExtensionField<F>>: 'static + Sync + Debug {
+pub trait LassoSubtable<F: PrimeField, E: ExtensionField<F>>: 'static + Sync + Debug + SubtableClone<F, E> {
     /// Returns the TypeId of this subtable.
     /// The `Jolt` trait has associated enum types `InstructionSet` and `Subtables`.
     /// This function is used to resolve the many-to-many mapping between `InstructionSet` variants
@@ -80,6 +80,25 @@ where
 }
 
 impl<F, E> Clone for Box<dyn LookupType<F, E>> {
+    fn clone(&self) -> Self {
+        self.clone_box()
+    }
+}
+
+pub trait SubtableClone<F, E> {
+    fn clone_box(&self) -> Box<dyn LassoSubtable<F, E>>;
+}
+
+impl<T, F: PrimeField, E: ExtensionField<F>> SubtableClone<F, E> for T
+where
+    T: LassoSubtable<F, E> + Clone + 'static,
+{
+    fn clone_box(&self) -> Box<dyn LassoSubtable<F, E>> {
+        Box::new(self.clone())
+    }
+}
+
+impl<F, E> Clone for Box<dyn LassoSubtable<F, E>> {
     fn clone(&self) -> Self {
         self.clone_box()
     }

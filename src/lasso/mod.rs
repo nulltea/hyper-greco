@@ -30,6 +30,8 @@ use std::{
     collections::{BTreeMap, HashMap},
     iter,
     marker::PhantomData,
+    rc::Rc,
+    sync::Arc,
 };
 use table::LookupId;
 pub use table::{LassoSubtable, LookupType, SubtableId, SubtableIndices};
@@ -147,12 +149,10 @@ impl<F: PrimeField, E: ExtensionField<F>, const C: usize, const M: usize> Node<F
         let (sub_claim, r_x_prime) = info_span!("LassoNode::verify_collation_sum_check")
             .in_scope(|| verify_sum_check(&g, claimed_sum, transcript))?;
 
-        // let e_polys_eval = transcript.read_felt_exts(table.num_memories())?;
-
-        // Round n+1
+        // // Round n+1
         let [gamma, tau] = transcript.squeeze_challenges(2).try_into().unwrap();
 
-        // memory checking
+        // // memory checking
         Self::verify_memory_checking(&self.preprocessing, num_vars, &gamma, &tau, transcript)?;
 
         Ok(chain![iter::once(vec![EvalClaim::new(r.to_vec(), claimed_sum)])].collect_vec())
@@ -383,11 +383,12 @@ impl<F: PrimeField, E: ExtensionField<F>, const C: usize, const M: usize> LassoN
         // let chunk_bits = mock_lookup.chunk_bits(log2(M) as usize);
         // key: chunk index, value: chunk
 
-        let mut chunk_map: HashMap<usize, memory_checking::verifier::Chunk<F>> = HashMap::new();
+        let mut chunk_map: HashMap<usize, memory_checking::verifier::Chunk<F, E, M>> =
+            HashMap::new();
         (0..num_memories).for_each(|memory_index| {
             let chunk_index = preprocessing.memory_to_dimension_index[memory_index];
             // let chunk_bits = chunk_bits[chunk_index];
-            let subtable_poly = &preprocessing.subtable_evaluate_mle_exprs
+            let subtable_poly = &preprocessing.subtables_by_idx.as_ref().unwrap()
                 [preprocessing.memory_to_subtable_index[memory_index]];
             let memory =
                 memory_checking::verifier::Memory::new(memory_index, subtable_poly.clone());
@@ -419,11 +420,12 @@ impl<F: PrimeField, E: ExtensionField<F>, const C: usize, const M: usize> LassoN
         mem_check.verify(num_vars, gamma, tau, transcript)
     }
 
+    #[tracing::instrument(skip_all, name = "LassoNode::subtable_lookup_indices")]
     fn subtable_lookup_indices(&self, inputs: &BoxMultilinearPoly<F, E>) -> Vec<Vec<usize>> {
         let num_rows: usize = inputs.len();
         let num_chunks = C;
 
-        let indices = izip!((0..num_rows), &self.lookups)
+        let indices: Vec<_> = izip_par!((0..num_rows), &self.lookups)
             .map(|(i, lookup_id)| {
                 let lookup = &self.preprocessing.lookups[lookup_id];
                 let mut index_bits = fe_to_bits_le(inputs[i]);
@@ -431,7 +433,8 @@ impl<F: PrimeField, E: ExtensionField<F>, const C: usize, const M: usize> LassoN
                 // TODO: put behind a feature flag
                 assert_eq!(
                     usize_from_bits_le(&fe_to_bits_le(inputs[i])),
-                    usize_from_bits_le(&index_bits)
+                    usize_from_bits_le(&index_bits),
+                    "index {i} out of range",
                 );
 
                 let mut chunked_index = iter::repeat(0).take(num_chunks).collect_vec();
@@ -445,7 +448,7 @@ impl<F: PrimeField, E: ExtensionField<F>, const C: usize, const M: usize> LassoN
                     .collect_vec();
                 chunked_index
             })
-            .collect_vec();
+            .collect();
 
         let lookup_indices = (0..num_chunks)
             .map(|i| indices.iter().map(|indices| indices[i]).collect_vec())
@@ -560,8 +563,8 @@ pub struct LassoPreprocessing<F: Field, E> {
     memory_to_subtable_index: Vec<usize>,
     memory_to_dimension_index: Vec<usize>,
     materialized_subtables: Option<Vec<BoxMultilinearPoly<'static, F, E>>>,
-    subtable_evaluate_mle_exprs: Vec<MultilinearPolyTerms<F>>,
-    lookups: BTreeMap<LookupId, Box<dyn LookupType<F, E>>>,
+    subtables_by_idx: Option<Vec<Box<dyn LassoSubtable<F, E>>>>,
+    lookups: Arc<BTreeMap<LookupId, Box<dyn LookupType<F, E>>>>,
     lookup_id_to_index: HashMap<LookupId, usize>,
     num_memories: usize,
 }
@@ -598,8 +601,7 @@ impl<F: PrimeField, E: ExtensionField<F>> LassoPreprocessing<F, E> {
         // Build a mapping from subtable type => chunk indices that access that subtable type
         let mut subtable_indices: Vec<SubtableIndices> =
             vec![SubtableIndices::with_capacity(C); subtables.len()];
-        let mut subtable_evaluate_mle_exprs =
-            vec![MultilinearPolyTerms::default(); subtables.len()];
+        let mut subtables_by_idx = vec![None; subtables.len()];
         let mut subtable_id_to_index = HashMap::with_capacity(subtables.len());
         for (_, lookup) in &lookups {
             for (subtable, indices) in lookup.subtables(C, M).into_iter() {
@@ -612,7 +614,7 @@ impl<F: PrimeField, E: ExtensionField<F>> LassoPreprocessing<F, E> {
                             .position(|s| s.subtable_id() == subtable.subtable_id())
                             .expect("Subtable not found")
                     });
-                subtable_evaluate_mle_exprs[*subtable_idx] = terms;
+                subtables_by_idx[*subtable_idx].get_or_insert(subtable);
                 subtable_indices[*subtable_idx].union_with(&indices);
             }
         }
@@ -661,9 +663,14 @@ impl<F: PrimeField, E: ExtensionField<F>> LassoPreprocessing<F, E> {
             memory_to_subtable_index,
             memory_to_dimension_index,
             lookup_to_memory_indices,
-            subtable_evaluate_mle_exprs,
+            subtables_by_idx: Some(
+                subtables_by_idx
+                    .into_iter()
+                    .map(|s| s.unwrap())
+                    .collect_vec(),
+            ),
             lookup_id_to_index,
-            lookups,
+            lookups: Arc::new(lookups),
         }
     }
 
@@ -677,14 +684,14 @@ impl<F: PrimeField, E: ExtensionField<F>> LassoPreprocessing<F, E> {
         s
     }
 
-    pub fn to_verifier_preprocessing(&self) -> LassoPreprocessing<F, E> {
+    pub fn to_verifier_preprocessing(&mut self) -> LassoPreprocessing<F, E> {
         LassoPreprocessing {
             subtable_to_memory_indices: self.subtable_to_memory_indices.clone(),
             lookup_to_memory_indices: self.lookup_to_memory_indices.clone(),
             memory_to_subtable_index: self.memory_to_subtable_index.clone(),
             memory_to_dimension_index: self.memory_to_dimension_index.clone(),
             materialized_subtables: None,
-            subtable_evaluate_mle_exprs: self.subtable_evaluate_mle_exprs.clone(),
+            subtables_by_idx: self.subtables_by_idx.take(),
             num_memories: self.num_memories,
             lookup_id_to_index: self.lookup_id_to_index.clone(),
             lookups: self.lookups.clone(),

@@ -2,26 +2,23 @@ use gkr::{
     ff_ext::{
         ff::{Field, PrimeField},
         ExtensionField,
-    },
-    poly::MultilinearPolyTerms,
-    sum_check::verify_sum_check,
-    transcript::TranscriptRead,
-    util::arithmetic::inner_product,
-    Error,
+    }, poly::MultilinearPolyTerms, sum_check::verify_sum_check, transcript::TranscriptRead, util::arithmetic::inner_product, Error
 };
 use itertools::{izip, Itertools};
-use std::{iter, marker::PhantomData};
+use std::{iter, marker::PhantomData, sync::Arc};
+
+use crate::lasso::LassoSubtable;
 
 use super::MemoryCheckingProver;
 
 #[derive(Debug)]
-pub struct Chunk<F: Field> {
+pub struct Chunk<F: Field, E: Field, const M: usize> {
     chunk_index: usize,
     chunk_bits: usize,
-    pub(crate) memory: Vec<Memory<F>>,
+    pub(crate) memory: Vec<Memory<F, E>>,
 }
 
-impl<F: PrimeField> Chunk<F> {
+impl<F: PrimeField, E: ExtensionField<F>, const M: usize> Chunk<F, E, M> {
     pub fn chunk_polys_index(&self, offset: usize, num_chunks: usize) -> Vec<usize> {
         let dim_poly_index = offset + 1 + self.chunk_index;
         let read_ts_poly_index = offset + 1 + num_chunks + self.chunk_index;
@@ -29,7 +26,7 @@ impl<F: PrimeField> Chunk<F> {
         vec![dim_poly_index, read_ts_poly_index, final_cts_poly_index]
     }
 
-    pub fn new(chunk_index: usize, chunk_bits: usize, memory: Memory<F>) -> Self {
+    pub fn new(chunk_index: usize, chunk_bits: usize, memory: Memory<F, E>) -> Self {
         Self {
             chunk_index,
             chunk_bits,
@@ -45,7 +42,7 @@ impl<F: PrimeField> Chunk<F> {
         self.chunk_bits
     }
 
-    pub fn add_memory(&mut self, memory: Memory<F>) {
+    pub fn add_memory(&mut self, memory: Memory<F, E>) {
         self.memory.push(memory);
     }
 
@@ -57,7 +54,7 @@ impl<F: PrimeField> Chunk<F> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn verify_memories<E: ExtensionField<F>>(
+    pub fn verify_memories(
         &self,
         read_xs: &[E],
         write_xs: &[E],
@@ -81,7 +78,8 @@ impl<F: PrimeField> Chunk<F> {
                 write_xs[i],
                 hash(&dim_x, &e_poly_xs[i], &(read_ts_poly_x + F::ONE))
             );
-            let subtable_poly_y = memory.subtable_poly.evaluate(y);
+            let subtable_poly_y = memory.subtable.evaluate_mle(y, M);
+
             assert_eq!(init_ys[i], hash(&id_poly_y, &subtable_poly_y, &E::ZERO));
             assert_eq!(
                 final_read_ys[i],
@@ -93,30 +91,30 @@ impl<F: PrimeField> Chunk<F> {
 }
 
 #[derive(Debug)]
-pub struct Memory<F: Field> {
+pub struct Memory<F: Field, E: Field> {
     memory_index: usize,
-    subtable_poly: MultilinearPolyTerms<F>,
+    subtable: Box<dyn LassoSubtable<F, E>>,
 }
 
-impl<F: Field> Memory<F> {
-    pub fn new(memory_index: usize, subtable_poly: MultilinearPolyTerms<F>) -> Self {
+impl<F: Field, E: Field> Memory<F, E> {
+    pub fn new(memory_index: usize, subtable: Box<dyn LassoSubtable<F, E>>) -> Self {
         Self {
             memory_index,
-            subtable_poly,
+            subtable,
         }
     }
 }
 
 #[derive(Debug)]
-pub struct MemoryCheckingVerifier<F: PrimeField, E: ExtensionField<F>> {
+pub struct MemoryCheckingVerifier<F: PrimeField, E: ExtensionField<F>, const M: usize> {
     /// chunks with the same bits size
-    chunks: Vec<Chunk<F>>,
+    chunks: Vec<Chunk<F, E, M>>,
     _marker: PhantomData<F>,
     _marker_e: PhantomData<E>,
 }
 
-impl<'a, F: PrimeField, E: ExtensionField<F>> MemoryCheckingVerifier<F, E> {
-    pub fn new(chunks: Vec<Chunk<F>>) -> Self {
+impl<'a, F: PrimeField, E: ExtensionField<F>, const M: usize> MemoryCheckingVerifier<F, E, M> {
+    pub fn new(chunks: Vec<Chunk<F, E, M>>) -> Self {
         Self {
             chunks,
             _marker: PhantomData,

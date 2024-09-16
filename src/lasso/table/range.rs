@@ -215,9 +215,9 @@ impl<F: PrimeField, E: ExtensionField<F>> LookupType<F, E> for RangeLookup<F, E>
         let num_chunks = bound_bits / log_M;
         let rem = Box::new(BoundSubtable::<F, E>::new(self.bound));
 
-        if bound_bits % log_M == 0 {
+        if self.bound % M as u64 == 0 {
             vec![(full, SubtableIndices::from(0..num_chunks))]
-        } else if bound_bits < log_M {
+        } else if self.bound < M as u64 {
             vec![(rem, SubtableIndices::from(0))]
         } else {
             vec![
@@ -235,7 +235,7 @@ impl<F: PrimeField, E: ExtensionField<F>> LookupType<F, E> for RangeLookup<F, E>
         let log2_M = M.ilog2() as usize;
         let bound_bits = self.bound.ilog2() as usize;
 
-        let remainder_bits = if bound_bits % log2_M != 0 {
+        let remainder_bits = if self.bound % M as u64 != 0 {
             let reminder = 1 << (bound_bits % log2_M);
             let cutoff = reminder + self.bound % M as u64;
             let cutoff_log2 = cutoff.ilog2() as usize;
