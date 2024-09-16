@@ -129,7 +129,7 @@ impl Keccak256Transcript<Vec<u8>> {
 }
 
 impl<'a> Keccak256Transcript<&'a [u8]> {
-    pub fn from_proof(proof: &'a [u8]) -> Keccak256Transcript<io::Cursor<&'a[u8]>> {
+    pub fn from_proof(proof: &'a [u8]) -> Keccak256Transcript<io::Cursor<&'a [u8]>> {
         Keccak256Transcript::new(io::Cursor::new(proof))
     }
 }
