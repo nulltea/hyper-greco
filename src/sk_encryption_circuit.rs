@@ -1,9 +1,6 @@
 pub use crate::constants::sk_enc_constants_16384_8x54_65537::{
     E_BOUND, K0IS, K1_BOUND, N, QIS, R1_BOUNDS, R2_BOUNDS, S_BOUND,
 };
-// pub use crate::constants::sk_enc_constants_8192_4x55_65537::{
-//     E_BOUND, K0IS, K1_BOUND, N, QIS, R1_BOUNDS, R2_BOUNDS, S_BOUND,
-// };
 use crate::lasso::LassoPreprocessing;
 use crate::{
     lasso::{table::range::RangeLookup, LassoNode},

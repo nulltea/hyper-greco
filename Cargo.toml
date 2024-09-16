@@ -69,10 +69,7 @@ panic = "abort"
 incremental = false
 
 [patch."https://github.com/han0110/gkr"]
-gkr = { path = "../examples/gkr/gkr" }
-
-[patch."https://github.com/han0110/plonkish"]
-plonkish_backend = { git = "https://github.com/DoHoonKim8/halo2-lasso", branch = "feature/Lasso" }
+gkr = { git = "https://github.com/nulltea/gkr-lasso" }
 
 [patch."https://github.com/han0110/goldilocks"]
-goldilocks = { path = "../Goldilocks" }
+goldilocks = { git = "https://github.com/nulltea/goldilocks", branch = "to_canonical_repr" }

@@ -16,8 +16,7 @@ use gkr::{
 };
 use memory_checking::{Chunk, Memory, MemoryCheckingProver};
 use plonkish_backend::{
-    poly::multilinear::MultilinearPolynomial,
-    util::arithmetic::{fe_to_bits_le, usize_from_bits_le},
+    poly::multilinear::MultilinearPolynomial, util::arithmetic::usize_from_bits_le,
 };
 use rayon::prelude::*;
 use std::{
@@ -66,11 +65,6 @@ impl<F: PrimeField, E: ExtensionField<F>, const C: usize, const M: usize> Node<F
         inputs: Vec<&BoxMultilinearPoly<F, E>>,
         transcript: &mut dyn TranscriptWrite<F, E>,
     ) -> Result<Vec<Vec<EvalClaim<E>>>, Error> {
-        // println!("combined claim {} {:?}", claim.points.len(), claim.value);
-
-        // VanillaNode::new(input_arity, log2_sub_input_size, gates, num_reps)
-
-        // let [input, output] = inputs.try_into().unwrap();
         let polys = self.polynomialize(inputs[0]);
         let mock_lookup = self.preprocessing.lookups.values().next().unwrap();
 
@@ -661,4 +655,21 @@ impl<F: PrimeField, E: ExtensionField<F>> LassoPreprocessing<F, E> {
             lookups: self.lookups.clone(),
         }
     }
+}
+
+pub fn fe_to_bits_le<F: PrimeField>(fe: F) -> Vec<bool> {
+    let repr = fe.to_repr();
+    let bytes = repr.as_ref();
+    bytes
+        .iter()
+        .flat_map(|byte| {
+            let value = u8::from_le(*byte);
+            let mut bits = vec![];
+            for i in 0..8 {
+                let mask = 1 << i;
+                bits.push(value & mask > 0);
+            }
+            bits
+        })
+        .collect_vec()
 }
