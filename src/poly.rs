@@ -33,12 +33,14 @@ impl<F: PrimeField> Poly<F> {
             .map(|coeff| F::from_str_vartime(coeff).unwrap())
             .collect_vec();
         let padding_size = size.saturating_sub(coefficients.len());
-        
+
         let mut shifted = vec![F::ZERO; padding_size];
         shifted.extend(coefficients);
         shifted.resize(size.next_power_of_two(), F::ZERO);
 
-        Poly { coefficients: shifted }
+        Poly {
+            coefficients: shifted,
+        }
     }
 
     pub fn to_vec(&self) -> Vec<F> {
@@ -48,6 +50,6 @@ impl<F: PrimeField> Poly<F> {
 
 impl<F: PrimeField> AsRef<[F]> for Poly<F> {
     fn as_ref(&self) -> &[F] {
-       &self.coefficients
+        &self.coefficients
     }
 }

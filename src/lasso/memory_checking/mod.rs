@@ -32,8 +32,6 @@ impl<'a, F: PrimeField, E: ExtensionField<F>> MemoryGKR<'a, F, E> {
     }
 }
 
-type Poly<'a, F, E> = BoxMultilinearPoly<'a, F, E>;
-
 #[derive(Clone, Debug)]
 pub struct Chunk<'a, F: PrimeField, E: ExtensionField<F>> {
     pub(super) chunk_index: usize,
@@ -44,7 +42,7 @@ pub struct Chunk<'a, F: PrimeField, E: ExtensionField<F>> {
 }
 
 impl<'a, F: PrimeField, E: ExtensionField<F>> Chunk<'a, F, E> {
-    pub(crate) fn new(
+    pub(in crate::lasso) fn new(
         chunk_index: usize,
         dim: &'a BoxMultilinearPoly<'a, F, E>,
         read_ts_poly: &'a BoxMultilinearPoly<'a, F, E>,

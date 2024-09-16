@@ -1,23 +1,21 @@
-use enum_dispatch::enum_dispatch;
 use fixedbitset::FixedBitSet;
 use gkr::{
     ff_ext::{ff::PrimeField, ExtensionField},
     poly::MultilinearPolyTerms,
     util::expression::Expression,
 };
+use std::fmt::Debug;
 use std::ops::Range;
-use std::{any::TypeId, fmt::Debug};
-use strum::{EnumCount, IntoEnumIterator};
 
 pub mod range;
-use range::*;
 // for some reason #[enum_dispatch] needs this
-use crate::sk_encryption_circuit::*;
 
 pub type SubtableId = String;
 pub type LookupId = String;
 
-pub trait LassoSubtable<F: PrimeField, E: ExtensionField<F>>: 'static + Sync + Debug + SubtableClone<F, E> {
+pub trait LassoSubtable<F: PrimeField, E: ExtensionField<F>>:
+    'static + Sync + Debug + SubtableClone<F, E>
+{
     /// Returns the TypeId of this subtable.
     /// The `Jolt` trait has associated enum types `InstructionSet` and `Subtables`.
     /// This function is used to resolve the many-to-many mapping between `InstructionSet` variants
@@ -34,7 +32,9 @@ pub trait LassoSubtable<F: PrimeField, E: ExtensionField<F>>: 'static + Sync + D
     fn evaluate_mle_expr(&self, log2_M: usize) -> MultilinearPolyTerms<F>;
 }
 
-pub trait LookupType<F: PrimeField, E: ExtensionField<F>>: 'static + Send + Sync + Debug + LookupClone<F, E> {
+pub trait LookupType<F: PrimeField, E: ExtensionField<F>>:
+    'static + Send + Sync + Debug + LookupClone<F, E>
+{
     /// Returns the identifier of this lookup type.
     fn lookup_id(&self) -> LookupId;
 

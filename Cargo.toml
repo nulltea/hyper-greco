@@ -37,6 +37,7 @@ blake3 = { version = "1", features = ["traits-preview"] }
 
 [features]
 bench = []
+sanity-check = []
 
 [profile.dev]
 opt-level = 3

@@ -92,7 +92,7 @@ impl<F: PrimeField, E: ExtensionField<F>> LassoSubtable<F, E> for BoundSubtable<
 
                 if i == cutoff_log2 {
                     for k in 0..num_extra {
-                        let mut term = E::from_bases(&[F::from((g_base + k) as u64)]);
+                        let mut term = E::from_bases(&[F::from(g_base + k)]);
                         for j in 0..cutoff_log2 {
                             if (k & (1 << j)) != 0 {
                                 term *= point[j];
@@ -136,7 +136,7 @@ impl<F: PrimeField, E: ExtensionField<F>> LassoSubtable<F, E> for BoundSubtable<
             if num_extra > 0 && i == cutoff_log2 {
                 let mut g_value = PolyExpr::ZERO;
                 for k in 0..num_extra {
-                    let mut term = PolyExpr::u64((g_base + k) as u64);
+                    let mut term = PolyExpr::u64(g_base + k);
                     for j in 0..cutoff_log2 {
                         if (k & (1 << j)) != 0 {
                             term = PolyExpr::mul(term, PolyExpr::Var(j));
@@ -197,7 +197,7 @@ impl<F: PrimeField, E: ExtensionField<F>> LookupType<F, E> for RangeLookup<F, E>
     fn combine_lookup_expressions(
         &self,
         expressions: Vec<Expression<E, usize>>,
-        C: usize,
+        _C: usize,
         M: usize,
     ) -> Expression<E, usize> {
         Expression::distribute_powers(expressions, E::from_bases(&[F::from(M as u64)]))
@@ -206,7 +206,7 @@ impl<F: PrimeField, E: ExtensionField<F>> LookupType<F, E> for RangeLookup<F, E>
     // SubtableIndices map subtable to memories
     fn subtables(
         &self,
-        C: usize,
+        _C: usize,
         M: usize,
     ) -> Vec<(Box<dyn LassoSubtable<F, E>>, SubtableIndices)> {
         let full = Box::new(FullLimbSubtable::<F, E>::new());

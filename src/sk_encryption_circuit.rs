@@ -10,7 +10,6 @@ use crate::{
     poly::Poly,
     transcript::Keccak256Transcript,
 };
-use gkr::circuit::node::LogUpNode;
 use gkr::izip_eq;
 use gkr::{
     chain_par,
@@ -22,29 +21,21 @@ use gkr::{
     ff_ext::ff::PrimeField,
     poly::{box_dense_poly, BoxMultilinearPoly},
     transcript::Transcript,
-    util::{
-        arithmetic::{radix2_fft, squares, ExtensionField},
-        izip, Itertools,
-    },
+    util::{arithmetic::ExtensionField, Itertools},
     verify_gkr,
 };
 use itertools::chain;
-use paste::paste;
-use plonkish_backend::backend::lookup::lasso;
 use plonkish_backend::pcs::multilinear::MultilinearBrakedown;
 use plonkish_backend::pcs::PolynomialCommitmentScheme;
 use plonkish_backend::poly::multilinear::MultilinearPolynomial;
 use plonkish_backend::util::code::BrakedownSpec6;
 use plonkish_backend::util::hash::{Keccak256, Output};
 use rand::RngCore;
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use rayon::iter::ParallelIterator;
 use serde::Deserialize;
 use std::cmp::min;
 use std::iter;
 use tracing::info_span;
-
-const E_BOUND_LEN: usize = (2 * E_BOUND + 1).next_power_of_two().ilog2() as usize;
-const K1_BOUND_LEN: usize = (2 * K1_BOUND + 1).next_power_of_two().ilog2() as usize;
 
 const LIMB_BITS: usize = 16;
 const C: usize = 4;
@@ -341,7 +332,7 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
         Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
     >(
         &self,
-        rng: impl RngCore + Clone,
+        _rng: impl RngCore + Clone,
     ) -> (ProverKey<F, E>, VerifierKey<F, E>) {
         let mut lasso_preprocessing = LassoPreprocessing::<F, E>::preprocess::<C, M>(chain![
             [
@@ -459,11 +450,12 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
         let preprocessing = pk;
         let mut transcript = Keccak256Transcript::<Vec<u8>>::default();
 
-        let circuit = {
+        let circuit = info_span!("init circuit").in_scope(|| {
             let mut circuit = Circuit::<F, F>::default();
             self.configure(&mut circuit, preprocessing);
             circuit
-        };
+        });
+
         let (values, output_claims) = info_span!("wintess gen").in_scope(|| {
             let (inputs, ctis_poly) =
                 info_span!("parse inputs").in_scope(|| self.get_inputs::<F, F>(args));
@@ -505,32 +497,34 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
         let preprocessing = vk;
         let mut transcript = Keccak256Transcript::from_proof(proof);
 
-        let ct0is_claim = {
-            let point = transcript.squeeze_challenges(self.ct0is_log2_size());
-            let ct0is = box_dense_poly(
-                ct0is
-                    .into_iter()
-                    .take(self.block.num_reps)
-                    .flat_map(|ct0i| {
-                        let ct0i = Poly::<F>::new_shifted(ct0i, 1 << self.log2_size());
-                        let mut ct0i = ct0i.as_ref()[1..].to_vec();
-                        ct0i.push(F::ZERO);
-                        ct0i
-                    })
-                    .collect_vec(),
-            );
-            let value = ct0is.evaluate(&point);
+        let output_claims = info_span!("eval output claim").in_scope(|| {
+            let ct0is_claim = {
+                let point = transcript.squeeze_challenges(self.ct0is_log2_size());
+                let ct0is = box_dense_poly(
+                    ct0is
+                        .into_iter()
+                        .take(self.block.num_reps)
+                        .flat_map(|ct0i| {
+                            let ct0i = Poly::<F>::new_shifted(ct0i, 1 << self.log2_size());
+                            let mut ct0i = ct0i.as_ref()[1..].to_vec();
+                            ct0i.push(F::ZERO);
+                            ct0i
+                        })
+                        .collect_vec(),
+                );
+                let value = ct0is.evaluate(&point);
 
-            EvalClaim::new(point, value)
-        };
+                EvalClaim::new(point, value)
+            };
 
-        let output_claims = vec![EvalClaim::new(vec![], F::ZERO), ct0is_claim];
+            vec![EvalClaim::new(vec![], F::ZERO), ct0is_claim]
+        });
 
-        let circuit = {
+        let circuit = info_span!("init circuit").in_scope(|| {
             let mut circuit = Circuit::<F, F>::default();
             self.configure(&mut circuit, preprocessing);
             circuit
-        };
+        });
 
         let input_claims = info_span!("GKR verify")
             .in_scope(|| verify_gkr(&circuit, &output_claims, &mut transcript).unwrap());

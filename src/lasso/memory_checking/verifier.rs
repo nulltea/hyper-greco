@@ -2,10 +2,14 @@ use gkr::{
     ff_ext::{
         ff::{Field, PrimeField},
         ExtensionField,
-    }, poly::MultilinearPolyTerms, sum_check::verify_sum_check, transcript::TranscriptRead, util::arithmetic::inner_product, Error
+    },
+    sum_check::verify_sum_check,
+    transcript::TranscriptRead,
+    util::arithmetic::inner_product,
+    Error,
 };
 use itertools::{izip, Itertools};
-use std::{iter, marker::PhantomData, sync::Arc};
+use std::{iter, marker::PhantomData};
 
 use crate::lasso::LassoSubtable;
 
@@ -113,7 +117,7 @@ pub struct MemoryCheckingVerifier<F: PrimeField, E: ExtensionField<F>, const M: 
     _marker_e: PhantomData<E>,
 }
 
-impl<'a, F: PrimeField, E: ExtensionField<F>, const M: usize> MemoryCheckingVerifier<F, E, M> {
+impl<F: PrimeField, E: ExtensionField<F>, const M: usize> MemoryCheckingVerifier<F, E, M> {
     pub fn new(chunks: Vec<Chunk<F, E, M>>) -> Self {
         Self {
             chunks,
@@ -131,7 +135,7 @@ impl<'a, F: PrimeField, E: ExtensionField<F>, const M: usize> MemoryCheckingVeri
     ) -> Result<(), Error> {
         let num_memories: usize = self.chunks.iter().map(|chunk| chunk.num_memories()).sum();
         let memory_bits = self.chunks[0].chunk_bits();
-        let (read_write_xs, x) = Self::verify_grand_product(
+        let (read_write_xs, _) = Self::verify_grand_product(
             num_reads,
             iter::repeat(None).take(2 * num_memories),
             transcript,
@@ -147,7 +151,7 @@ impl<'a, F: PrimeField, E: ExtensionField<F>, const M: usize> MemoryCheckingVeri
 
         let hash = |a: &E, v: &E, t: &E| -> E { *a + *v * gamma + *t * gamma.square() - tau };
         let mut offset = 0;
-        let (dim_xs, read_ts_poly_xs, final_cts_poly_ys, e_poly_xs) = self
+        let _ = self
             .chunks
             .iter()
             .map(|chunk| {
@@ -168,19 +172,6 @@ impl<'a, F: PrimeField, E: ExtensionField<F>, const M: usize> MemoryCheckingVeri
             .into_iter()
             .multiunzip::<(Vec<_>, Vec<_>, Vec<_>, Vec<Vec<_>>)>();
 
-        // self.opening_evals(
-        //     num_chunks,
-        //     polys_offset,
-        //     points_offset,
-        //     &lookup_opening_points,
-        //     lookup_opening_evals,
-        //     &dim_xs,
-        //     &read_ts_poly_xs,
-        //     &final_cts_poly_ys,
-        //     &e_poly_xs.concat(),
-        // );
-        // lookup_opening_points.extend_from_slice(&[x, y]);
-
         Ok(())
     }
 
@@ -198,7 +189,7 @@ impl<'a, F: PrimeField, E: ExtensionField<F>, const M: usize> MemoryCheckingVeri
                 .into_iter()
                 .map(|claimed| match claimed {
                     Some(claimed) => {
-                        transcript.common_felts(&claimed.as_bases());
+                        transcript.common_felts(claimed.as_bases());
                         Ok(claimed)
                     }
                     None => transcript.read_felt_ext(),
@@ -207,7 +198,7 @@ impl<'a, F: PrimeField, E: ExtensionField<F>, const M: usize> MemoryCheckingVeri
         };
 
         (0..num_vars).try_fold((claimed_v_0s, Vec::new()), |result, num_vars| {
-            let (claimed_v_ys, y) = result;
+            let (claimed_v_ys, _) = result;
 
             let (mut x, evals) = if num_vars == 0 {
                 let evals = transcript.read_felt_exts(2 * num_batching)?;
@@ -230,11 +221,6 @@ impl<'a, F: PrimeField, E: ExtensionField<F>, const M: usize> MemoryCheckingVeri
                 };
 
                 let evals = transcript.read_felt_exts(2 * num_batching)?;
-
-                // let eval_by_query = eval_by_query(&evals);
-                // if x_eval != evaluate(&expression, num_vars, &eval_by_query, &[gamma], &[&y], &x) {
-                //     return Err(Error::InvalidSumCheck("unmatched sum check output".to_string()));
-                // }
 
                 (x, evals)
             };

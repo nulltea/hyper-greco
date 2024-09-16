@@ -1,15 +1,11 @@
-use ark_std::{iterable::Iterable, log2};
+use ark_std::log2;
 use gkr::{
     circuit::node::{CombinedEvalClaim, EvalClaim, Node},
     ff_ext::ff::PrimeField,
     izip_par,
-    poly::{
-        box_dense_poly, BoxMultilinearPoly, DensePolynomial, MultilinearPoly, MultilinearPolyTerms,
-    },
-    sum_check::{
-        generic::Generic, prove_sum_check, verify_sum_check, SumCheckFunction, SumCheckPoly,
-    },
-    transcript::{Transcript, TranscriptRead, TranscriptWrite},
+    poly::{box_dense_poly, BoxMultilinearPoly, DensePolynomial, MultilinearPoly},
+    sum_check::{generic::Generic, prove_sum_check, verify_sum_check, SumCheckPoly},
+    transcript::{TranscriptRead, TranscriptWrite},
     util::{
         arithmetic::{ExtensionField, Field},
         chain,
@@ -20,8 +16,6 @@ use gkr::{
 };
 use memory_checking::{Chunk, Memory, MemoryCheckingProver};
 use plonkish_backend::{
-    backend::lookup,
-    pcs::PolynomialCommitmentScheme,
     poly::multilinear::MultilinearPolynomial,
     util::arithmetic::{fe_to_bits_le, usize_from_bits_le},
 };
@@ -29,8 +23,6 @@ use rayon::prelude::*;
 use std::{
     collections::{BTreeMap, HashMap},
     iter,
-    marker::PhantomData,
-    rc::Rc,
     sync::Arc,
 };
 use table::LookupId;
@@ -89,7 +81,7 @@ impl<F: PrimeField, E: ExtensionField<F>, const C: usize, const M: usize> Node<F
             e_polys,
             lookup_outputs,
             lookup_flag_polys,
-            lookup_flag_bitvectors,
+            lookup_flag_bitvectors: _,
         } = polys;
 
         assert!(inputs[0].to_dense() == lookup_outputs.to_dense());
@@ -139,14 +131,14 @@ impl<F: PrimeField, E: ExtensionField<F>, const C: usize, const M: usize> Node<F
         _: CombinedEvalClaim<E>,
         transcript: &mut dyn TranscriptRead<F, E>,
     ) -> Result<Vec<Vec<EvalClaim<E>>>, Error> {
-        let mock_lookup = self.preprocessing.lookups.values().next().unwrap();
+        let lookup = self.preprocessing.lookups.values().next().unwrap();
         let num_vars = self.num_vars;
         let r = transcript.squeeze_challenges(num_vars);
 
-        let g = self.collation_sum_check_function(&mock_lookup, num_vars);
+        let g = self.collation_sum_check_function(lookup, num_vars);
         let claimed_sum = transcript.read_felt_ext()?;
 
-        let (sub_claim, r_x_prime) = info_span!("LassoNode::verify_collation_sum_check")
+        let _ = info_span!("LassoNode::verify_collation_sum_check")
             .in_scope(|| verify_sum_check(&g, claimed_sum, transcript))?;
 
         // // Round n+1
@@ -178,7 +170,6 @@ impl<F: PrimeField, E: ExtensionField<F>, const C: usize, const M: usize> LassoN
         &self,
         inputs: &BoxMultilinearPoly<F, E>,
     ) -> LassoPolynomials<'a, F, E> {
-        let num_memories = self.preprocessing.num_memories;
         let num_reads = inputs.len().next_power_of_two();
 
         // subtable_lookup_indices : [[usize; num_rows]; num_chunks]
@@ -282,8 +273,10 @@ impl<F: PrimeField, E: ExtensionField<F>, const C: usize, const M: usize> LassoN
         num_vars: usize,
         transcript: &mut dyn TranscriptWrite<F, E>,
     ) -> Result<Vec<Vec<EvalClaim<E>>>, Error> {
-        let claimed_sum = self.sum_check_claim(r, lookup, e_polys, flag_polys);
-        assert_eq!(claimed_sum, lookup_output_poly.evaluate(r));
+        let claimed_sum = self.sum_check_claim(r, e_polys, flag_polys);
+        if cfg!(feature = "sanity-check") {
+            assert_eq!(claimed_sum, lookup_output_poly.evaluate(r));
+        }
 
         transcript.write_felt_ext(&claimed_sum)?;
 
@@ -350,12 +343,6 @@ impl<F: PrimeField, E: ExtensionField<F>, const C: usize, const M: usize> LassoN
             }
         });
 
-        // sanity check
-        // {
-        //     let num_chunks = table.chunk_bits().len();
-        //     assert_eq!(chunk_map.len(), num_chunks);
-        // }
-
         let mut chunks = chunk_map.into_iter().collect_vec();
         chunks.sort_by_key(|(chunk_index, _)| *chunk_index);
         let chunks = chunks.into_iter().map(|(_, chunk)| chunk).collect_vec();
@@ -372,14 +359,10 @@ impl<F: PrimeField, E: ExtensionField<F>, const C: usize, const M: usize> LassoN
         transcript: &mut dyn TranscriptRead<F, E>,
     ) -> Result<(), Error> {
         let num_memories = preprocessing.num_memories;
-        // let chunk_bits = mock_lookup.chunk_bits(log2(M) as usize);
-        // key: chunk index, value: chunk
-
         let mut chunk_map: HashMap<usize, memory_checking::verifier::Chunk<F, E, M>> =
             HashMap::new();
         (0..num_memories).for_each(|memory_index| {
             let chunk_index = preprocessing.memory_to_dimension_index[memory_index];
-            // let chunk_bits = chunk_bits[chunk_index];
             let subtable_poly = &preprocessing.subtables_by_idx.as_ref().unwrap()
                 [preprocessing.memory_to_subtable_index[memory_index]];
             let memory =
@@ -397,12 +380,6 @@ impl<F: PrimeField, E: ExtensionField<F>, const C: usize, const M: usize> LassoN
                 });
             }
         });
-
-        // sanity check
-        // {
-        //     let num_chunks = preprocessing.chunk_bits().len();
-        //     assert_eq!(chunk_map.len(), num_chunks);
-        // }
 
         let mut chunks = chunk_map.into_iter().collect_vec();
         chunks.sort_by_key(|(chunk_index, _)| *chunk_index);
@@ -422,13 +399,13 @@ impl<F: PrimeField, E: ExtensionField<F>, const C: usize, const M: usize> LassoN
                 let lookup = &self.preprocessing.lookups[lookup_id];
                 let mut index_bits = fe_to_bits_le(inputs[i]);
                 index_bits.truncate(lookup.chunk_bits(M).iter().sum());
-                // TODO: put behind a feature flag
-                assert_eq!(
-                    usize_from_bits_le(&fe_to_bits_le(inputs[i])),
-                    usize_from_bits_le(&index_bits),
-                    "index {i} out of range",
-                );
-
+                if cfg!(feature = "sanity-check") {
+                    assert_eq!(
+                        usize_from_bits_le(&fe_to_bits_le(inputs[i])),
+                        usize_from_bits_le(&index_bits),
+                        "index {i} out of range",
+                    );
+                }
                 let mut chunked_index = iter::repeat(0).take(num_chunks).collect_vec();
                 let chunked_index_bits = lookup.subtable_indices(index_bits, M.ilog2() as usize);
                 chunked_index
@@ -457,7 +434,6 @@ impl<F: PrimeField, E: ExtensionField<F>, const C: usize, const M: usize> LassoN
     pub fn sum_check_claim(
         &self,
         r: &[E], // claim: CombinedEvalClaim<E>,
-        lookup: &Box<dyn LookupType<F, E>>,
         e_polys: &[BoxMultilinearPoly<F, E>],
         flag_polys: &[BoxMultilinearPoly<F, E>],
     ) -> E {
@@ -594,7 +570,6 @@ impl<F: PrimeField, E: ExtensionField<F>> LassoPreprocessing<F, E> {
         let mut subtable_id_to_index = HashMap::with_capacity(subtables.len());
         for (_, lookup) in &lookups {
             for (subtable, indices) in lookup.subtables(C, M).into_iter() {
-                let terms = subtable.evaluate_mle_expr(log2(M) as usize);
                 let subtable_idx = subtable_id_to_index
                     .entry(subtable.subtable_id())
                     .or_insert_with(|| {
@@ -687,184 +662,3 @@ impl<F: PrimeField, E: ExtensionField<F>> LassoPreprocessing<F, E> {
         }
     }
 }
-
-// #[cfg(test)]
-// pub mod test {
-//     use super::*;
-//     use enum_dispatch::enum_dispatch;
-//     use gkr::{
-//         circuit::{node::InputNode, Circuit},
-//         dev::run_gkr_with_values,
-//         poly::{box_dense_poly, MultilinearPolyTerms},
-//         util::{
-//             arithmetic::ExtensionField,
-//             chain,
-//             dev::{assert_polys_eq, seeded_std_rng, std_rng},
-//             expression::Expression,
-//             Itertools,
-//         },
-//     };
-//     use goldilocks::Goldilocks;
-//     use plonkish_backend::{
-//         pcs::multilinear::MultilinearBrakedown,
-//         util::{code::BrakedownSpec6, DeserializeOwned, Serialize},
-//     };
-//     use rand::{rngs::StdRng, Rng};
-//     use std::any::TypeId;
-//     use std::iter;
-//     use strum_macros::{EnumCount, EnumIter};
-//     use table::range::{FullLimbSubtable, RangeStategy, ReminderSubtable};
-
-//     pub type Brakedown<F> =
-//         MultilinearBrakedown<F, plonkish_backend::util::hash::Keccak256, BrakedownSpec6>;
-
-//     /// Generates an enum out of a list of LassoSubtable types. All LassoSubtable methods
-//     /// are callable on the enum type via enum_dispatch.
-//     // #[macro_export]
-//     macro_rules! subtable_enum {
-//         ($enum_name:ident, $($alias:ident: $struct:ty),+) => {
-//             #[enum_dispatch(LassoSubtable<F, E>)]
-//             #[derive(EnumCount, EnumIter, Debug)]
-//             pub enum $enum_name<F: PrimeField, E: ExtensionField<F>> { $($alias($struct)),+ }
-//             impl<F: PrimeField, E: ExtensionField<F>> From<SubtableId> for $enum_name<F, E> {
-//               fn from(subtable_id: SubtableId) -> Self {
-//                 $(
-//                   if subtable_id == TypeId::of::<$struct>() {
-//                     $enum_name::from(<$struct>::new())
-//                   } else
-//                 )+
-//                 { panic!("Unexpected subtable id {:?}", subtable_id) }
-//               }
-//             }
-
-//             impl<F: PrimeField, E: ExtensionField<F>> SubtableSet<F, E> for $enum_name<F, E> {}
-//         };
-//     }
-
-//     const TEST_BITS: usize = 55;
-
-//     subtable_enum!(
-//         RangeSubtables,
-//         Full: FullLimbSubtable<F, E>,
-//         Reminder45: ReminderSubtable<F, E, 45>,
-//         Reminder: ReminderSubtable<F, E, TEST_BITS>
-//     );
-
-//     #[derive(Copy, Clone, Debug, EnumCount, EnumIter)]
-//     #[enum_dispatch(LookupType)]
-//     enum RangeLookups {
-//         // Range32(RangeStategy<32>),
-//         Range45(RangeStategy<45>),
-//         // Range55(RangeStategy<55>),
-//         RangeTest(RangeStategy<TEST_BITS>),
-//     }
-//     impl CircuitLookups for RangeLookups {}
-
-//     #[test]
-//     fn lasso_single() {
-//         run_circuit::<Goldilocks, Goldilocks>(lasso_circuit::<_, _, 1>);
-//     }
-
-//     fn lasso_circuit<
-//         F: PrimeField + Serialize + DeserializeOwned,
-//         E: ExtensionField<F>,
-//         const N: usize,
-//     >(
-//         num_vars: usize,
-//         rng: &mut impl Rng,
-//     ) -> TestData<F, E> {
-//         const C: usize = 8;
-//         const M: usize = 1 << 16;
-//         // let log2_t_size = rand_range(0..2 * num_vars, &mut rng);
-
-//         println!("num_vars: {}", num_vars);
-//         let size = 1 << num_vars;
-
-//         let rng = &mut std_rng();
-
-//         let poly = {
-//             let evals1 = iter::repeat_with(|| F::from_u128(rng.gen_range(0..(1 << 35))))
-//                 .take(size)
-//                 .collect_vec();
-//             let evals2 = iter::repeat_with(|| F::from_u128(rng.gen_range(0..(1 << 55))))
-//                 .take(size)
-//                 .collect_vec();
-
-//             box_dense_poly([evals1, evals2].concat())
-//         };
-
-//         let preprocessing = LassoLookupsPreprocessing::<F, E>::preprocess::<
-//             C,
-//             M,
-//             RangeLookups,
-//             RangeSubtables<F, E>,
-//         >();
-
-//         let circuit = {
-//             let mut circuit = Circuit::default();
-
-//             let lookup_output = (0..1)
-//                 .map(|_| circuit.insert(InputNode::new(num_vars + 1, 1)))
-//                 .collect_vec();
-
-//             let lasso = circuit.insert(LassoNode::<_, _, RangeLookups, C, M>::new(
-//                 preprocessing,
-//                 num_vars + 1,
-//                 chain![
-//                     // iter::repeat(RangeLookups::Range32(RangeStategy::<32>)).take(1 << num_vars),
-//                     iter::repeat(RangeLookups::Range45(RangeStategy::<45>)).take(1 << num_vars),
-//                     iter::repeat(RangeLookups::RangeTest(RangeStategy::<TEST_BITS>))
-//                         .take(1 << num_vars),
-//                     // iter::repeat(RangeLookups::Range128(RangeStategy::<128>)).take(1 << num_vars),
-//                 ]
-//                 .collect_vec(),
-//             ));
-//             for input in lookup_output {
-//                 circuit.connect(input, lasso)
-//             }
-
-//             circuit
-//         };
-
-//         let inputs = vec![poly];
-
-//         // let inputs = layers[0]
-//         //     .iter()
-//         //     .flat_map(|layer| {
-//         //         [
-//         //             box_dense_poly(layer.v_l.to_dense()),
-//         //             box_dense_poly(layer.v_r.to_dense()),
-//         //         ]
-//         //     })
-//         //     .collect_vec();
-
-//         // let values = layers
-//         //     .into_iter()
-//         //     .flat_map(|layers| layers.into_iter().flat_map(|layer| [layer.v_l, layer.v_r]))
-//         //     .collect_vec();
-
-//         // let values = vec![];
-
-//         (circuit, inputs, None)
-//     }
-
-//     pub(super) type TestData<F, E> = (
-//         Circuit<F, E>,
-//         Vec<BoxMultilinearPoly<'static, F, E>>,
-//         Option<Vec<BoxMultilinearPoly<'static, F, E>>>,
-//     );
-
-//     pub(super) fn run_circuit<F: PrimeField, E: ExtensionField<F>>(
-//         f: impl Fn(usize, &mut StdRng) -> TestData<F, E>,
-//     ) {
-//         let mut rng = seeded_std_rng();
-//         for num_vars in 2..3 {
-//             let (circuit, inputs, expected_values) = f(num_vars, &mut rng);
-//             let values = circuit.evaluate(inputs);
-//             if let Some(expected_values) = expected_values {
-//                 assert_polys_eq(&values, &expected_values);
-//             }
-//             run_gkr_with_values(&circuit, &values, &mut rng);
-//         }
-//     }
-// }

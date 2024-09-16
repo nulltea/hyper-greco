@@ -214,7 +214,7 @@ impl<'a, F: PrimeField + Field, E: ExtensionField<F>> MemoryCheckingProver<'a, F
                             if cfg!(feature = "sanity-check") {
                                 assert_eq!(claimed, computed)
                             }
-                            transcript.common_felts(&computed.as_bases());
+                            transcript.common_felts(computed.as_bases());
                             Ok(computed)
                         }
                         None => transcript.write_felt_ext(&computed).map(|_| computed),
@@ -285,7 +285,7 @@ impl<'a, F: PrimeField + Field, E: ExtensionField<F>> MemoryCheckingProver<'a, F
     pub fn sum_check_claim(claimed_v_ys: &[E], gamma: E) -> E {
         inner_product(
             claimed_v_ys.to_vec(),
-            &powers(gamma).take(claimed_v_ys.len()).collect_vec(),
+            powers(gamma).take(claimed_v_ys.len()).collect_vec(),
         )
     }
 
