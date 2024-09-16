@@ -184,8 +184,6 @@ impl<F: PrimeField, E: ExtensionField<F>, const C: usize, const M: usize> LassoN
         // subtable_lookup_indices : [[usize; num_rows]; num_chunks]
         let subtable_lookup_indices = self.subtable_lookup_indices(inputs);
 
-        println!("num memories: {}", num_memories);
-
         let lookup_inputs = izip!(0..inputs.len(), self.lookups.clone())
             .map(|(i, lookup_id)| (i, self.preprocessing.lookup_id_to_index[&lookup_id]))
             .collect_vec();
@@ -236,12 +234,6 @@ impl<F: PrimeField, E: ExtensionField<F>, const C: usize, const M: usize> LassoN
                 (read_acc, final_acc, e_acc)
             },
         );
-
-        println!(
-            "read_cts: {:?}",
-            read_cts.iter().map(|e| e.len()).collect_vec()
-        );
-
         let dims: Vec<_> = subtable_lookup_indices
             .into_par_iter()
             .take(C)
@@ -471,13 +463,10 @@ impl<F: PrimeField, E: ExtensionField<F>, const C: usize, const M: usize> LassoN
     ) -> E {
         let num_memories = self.preprocessing.num_memories;
         assert_eq!(e_polys.len(), num_memories);
-        println!("num_memories: {}", num_memories);
         let num_vars = e_polys[0].num_vars();
         let bh_size = 1 << num_vars;
         let eq = MultilinearPolynomial::eq_xy(r);
-        println!("flag_polys: {:?}", flag_polys.len());
         // \sum_{k \in \{0, 1\}^{\log m}} (\tilde{eq}(r, k) * g(E_1(k), ..., E_{\alpha}(k)))
-        println!("bh_size: {}", bh_size);
         let claim = (0..bh_size)
             .into_par_iter()
             .map(|k| {

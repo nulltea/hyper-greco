@@ -56,28 +56,22 @@ pub type Brakedown<F> =
 pub type ProverKey<
     F,
     E,
-    Pcs: PolynomialCommitmentScheme<
-        F,
-        Polynomial = MultilinearPolynomial<F>,
-        CommitmentChunk = Output<Keccak256>,
-    >,
-> = (
-    LassoPreprocessing<F, E>,
-    Vec<(Pcs::Commitment, Pcs::ProverParam)>,
-);
+    // Pcs: PolynomialCommitmentScheme<
+    //     F,
+    //     Polynomial = MultilinearPolynomial<F>,
+    //     CommitmentChunk = Output<Keccak256>,
+    // >,
+> = LassoPreprocessing<F, E>;
 
 pub type VerifierKey<
     F,
     E,
-    Pcs: PolynomialCommitmentScheme<
-        F,
-        Polynomial = MultilinearPolynomial<F>,
-        CommitmentChunk = Output<Keccak256>,
-    >,
-> = (
-    LassoPreprocessing<F, E>,
-    Vec<(Pcs::Commitment, Pcs::VerifierParam)>,
-);
+    // Pcs: PolynomialCommitmentScheme<
+    //     F,
+    //     Polynomial = MultilinearPolynomial<F>,
+    //     CommitmentChunk = Output<Keccak256>,
+    // >,
+> = LassoPreprocessing<F, E>;
 
 /// `BfvSkEncryptionCircuit` is a circuit that checks the correct formation of a ciphertext resulting from BFV secret key encryption
 /// All the polynomials coefficients and scalars are normalized to be in the range `[0, p)` where p is the modulus of the prime field of the circuit
@@ -211,7 +205,7 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncryptBlock<POLY_LOG2_SIZE> {
                 1,
             ))
         };
-        let r2is_range = {
+        let lasso_ranges = {
             let lookups = chain![
                 R1_BOUNDS
                     .iter()
@@ -246,7 +240,7 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncryptBlock<POLY_LOG2_SIZE> {
 
         connect!(circuit {
             lasso_inputs_batched <- s, e, k1;
-            r2is_range <- lasso_inputs_batched;
+            lasso_ranges <- lasso_inputs_batched;
         });
 
         let s_eval = circuit.insert(FftNode::forward(log2_size));
@@ -313,7 +307,6 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncryptBlock<POLY_LOG2_SIZE> {
         };
 
         connect!(circuit {
-            // r2is_range <- r2is_m, r2is_t, r2is;
             r2i_cyclo <- r2is;
             sum <- sai_par, es, k1kis, r1iqis, r2i_cyclo;
         });
@@ -349,7 +342,7 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
     >(
         &self,
         rng: impl RngCore + Clone,
-    ) -> (ProverKey<F, E, Pcs>, VerifierKey<F, E, Pcs>) {
+    ) -> (ProverKey<F, E>, VerifierKey<F, E>) {
         let mut lasso_preprocessing = LassoPreprocessing::<F, E>::preprocess::<C, M>(chain![
             [
                 RangeLookup::new_boxed(S_BOUND * 2 + 1),
@@ -366,72 +359,10 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
                 .map(|&bound| RangeLookup::new_boxed(bound * 2 + 1))
         ]);
 
-        let (comms, pks, vks): (
-            Vec<Pcs::Commitment>,
-            Vec<Pcs::ProverParam>,
-            Vec<Pcs::VerifierParam>,
-        ) = info_span!("pcs commit tables").in_scope(|| {
-            iter::once({
-                let t = vec![F::ZERO, F::ONE, F::ZERO - F::ONE, F::ZERO];
-                let p = Pcs::setup(t.len(), 1, rng.clone()).unwrap();
-                let (pp, vp) = Pcs::trim(&p, t.len(), 0).unwrap();
-
-                (
-                    Pcs::commit(&pp, &MultilinearPolynomial::new(t)).unwrap(),
-                    pp,
-                    vp,
-                )
-            })
-            .chain(iter::once({
-                let mut t = (0..=E_BOUND)
-                    .flat_map(|b| [F::ZERO - F::from(b), F::from(b)])
-                    .collect_vec();
-                t.resize(1 << E_BOUND_LEN, F::ZERO);
-                let p = Pcs::setup(t.len(), 1, rng.clone()).unwrap();
-                let (pp, vp) = Pcs::trim(&p, t.len(), 0).unwrap();
-                (
-                    Pcs::commit(&pp, &MultilinearPolynomial::new(t)).unwrap(),
-                    pp,
-                    vp,
-                )
-            }))
-            .chain(iter::once({
-                let mut t = (0..=K1_BOUND)
-                    .flat_map(|b| [F::ZERO - F::from(b), F::from(b)])
-                    .collect_vec();
-                t.resize(1 << K1_BOUND_LEN, F::ZERO);
-                let p = Pcs::setup(t.len(), 1, rng.clone()).unwrap();
-                let (pp, vp) = Pcs::trim(&p, t.len(), 0).unwrap();
-                (
-                    Pcs::commit(&pp, &MultilinearPolynomial::new(t)).unwrap(),
-                    pp,
-                    vp,
-                )
-            }))
-            .chain(
-                izip!(R1_BOUNDS, self.block.r1i_bound_log2_size())
-                    .map(|(bound, bound_len)| {
-                        let mut t = (0..=bound)
-                            .flat_map(|b| [F::ZERO - F::from(b), F::from(b)])
-                            .collect_vec();
-                        t.resize(1 << bound_len, F::ZERO);
-                        let p = Pcs::setup(t.len(), 1, rng.clone()).unwrap();
-                        let (pp, vp) = Pcs::trim(&p, t.len(), 0).unwrap();
-                        (
-                            Pcs::commit(&pp, &MultilinearPolynomial::new(t)).unwrap(),
-                            pp,
-                            vp,
-                        )
-                    })
-                    .take(self.block.num_reps),
-            )
-            .multiunzip()
-        });
-
         let lasso_verifier = lasso_preprocessing.to_verifier_preprocessing();
 
-        let pk = (lasso_preprocessing, izip!(comms.clone(), pks).collect_vec());
-        let vk = (lasso_verifier, izip!(comms, vks).collect_vec());
+        let pk = lasso_preprocessing;
+        let vk = lasso_verifier;
 
         (pk, vk)
     }
@@ -446,24 +377,6 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
         let s = circuit.insert(InputNode::new(log2_size, 1));
         let e = circuit.insert(InputNode::new(log2_size, 1));
         let k1 = circuit.insert(InputNode::new(log2_size, 1));
-
-        let s_m = circuit.insert(InputNode::new(2, 1));
-        let s_t = circuit.insert(InputNode::new(2, 1));
-        let s_range = circuit.insert(LogUpNode::new(2, log2_size, 1));
-
-        let e_m = circuit.insert(InputNode::new(E_BOUND_LEN, 1));
-        let e_t = circuit.insert(InputNode::new(E_BOUND_LEN, 1));
-        let e_range = circuit.insert(LogUpNode::new(E_BOUND_LEN, log2_size, 1));
-
-        let k1_m = circuit.insert(InputNode::new(K1_BOUND_LEN, 1));
-        let k1_t = circuit.insert(InputNode::new(K1_BOUND_LEN, 1));
-        let k1_range = circuit.insert(LogUpNode::new(K1_BOUND_LEN, log2_size, 1));
-
-        connect!(circuit {
-            s_range <- s_m, s_t, s;
-            e_range <- e_m, e_t, e;
-            k1_range <- k1_m, k1_t, k1;
-        });
 
         self.block.configure(circuit, s, e, k1, preprocessing)
     }
@@ -516,53 +429,8 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
             .map(|r2i| r2i.to_vec())
             .collect_vec();
 
-        let (s_t, s_m) = {
-            let t = [F::ZERO, F::ONE, F::ZERO - F::ONE, F::ZERO];
-            let mut m = [F::ZERO; 4];
-            s.to_vec().iter().for_each(|s| {
-                if let Some(i) = t.iter().position(|e| e == s) {
-                    m[i] += F::ONE;
-                }
-            });
-
-            (t.to_vec(), m.to_vec())
-        };
-
-        let (e_t, e_m) = {
-            let mut t = (0..=E_BOUND)
-                .flat_map(|b| [F::ZERO - F::from(b), F::from(b)])
-                .collect_vec();
-            t.resize(1 << E_BOUND_LEN, F::ZERO);
-            let mut m = vec![F::ZERO; 1 << E_BOUND_LEN];
-            e.as_ref().iter().for_each(|s| {
-                if let Some(i) = t.iter().position(|e| e == s) {
-                    m[i] += F::ONE;
-                }
-            });
-
-            (t, m)
-        };
-
-        let (k1_t, k1_m) = {
-            let mut t = (0..=K1_BOUND)
-                .flat_map(|b| [F::ZERO - F::from(b), F::from(b)])
-                .collect_vec();
-            t.resize(1 << K1_BOUND_LEN, F::ZERO);
-            let mut m = vec![F::ZERO; 1 << K1_BOUND_LEN];
-            k1.as_ref().iter().for_each(|s| {
-                if let Some(i) = t.iter().position(|e| e == s) {
-                    m[i] += F::ONE;
-                }
-            });
-
-            (t, m)
-        };
-
         let inputs = chain_par![
             [s.to_vec(), e.to_vec(), k1.to_vec()],
-            [s_m, s_t],
-            [e_m, e_t],
-            [k1_m, k1_t],
             ais,
             r1is,
             [r2is],
@@ -586,9 +454,9 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
     >(
         &self,
         args: &BfvSkEncryptArgs,
-        pk: ProverKey<F, F, Pcs>,
+        pk: ProverKey<F, F>,
     ) -> Vec<u8> {
-        let (preprocessing, pk) = pk;
+        let preprocessing = pk;
         let mut transcript = Keccak256Transcript::<Vec<u8>>::default();
 
         let circuit = {
@@ -602,60 +470,20 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
 
             let values = info_span!("eval circuit").in_scope(|| circuit.evaluate(inputs));
 
-            // let values = info_span!("gen values").in_scope(|| self.gen_values::<F, F>(args));
-
             let ct0is_claim = info_span!("eval output").in_scope(|| {
                 let point = transcript.squeeze_challenges(self.ct0is_log2_size());
                 let value = ctis_poly.evaluate(&point);
                 EvalClaim::new(point.clone(), value)
             });
 
-            let mut output_claims = vec![EvalClaim::new(vec![], F::ZERO); 4]; // 4 + self.block.num_reps// should be self.block.num_reps * 2 (for r2is range checks)
-            output_claims.push(ct0is_claim);
+            let output_claims = vec![EvalClaim::new(vec![], F::ZERO), ct0is_claim];
 
             (values, output_claims)
         });
 
-        let claims = info_span!("GKR prove")
+        let _claims = info_span!("GKR prove")
             .in_scope(|| gkr::prove_gkr(&circuit, &values, &output_claims, &mut transcript))
             .unwrap();
-
-        info_span!("LogUp IOP prove").in_scope(|| {
-            let inputs_map = circuit.inputs().collect_vec();
-
-            Pcs::open(
-                &pk[0].1,
-                &MultilinearPolynomial::new(values[inputs_map[4]].to_dense()),
-                &pk[0].0,
-                &claims[4][0].point().to_vec(),
-                &claims[4][0].value(),
-                &mut transcript,
-            )
-            .expect("failed to open `s` lookup table commitment");
-
-            Pcs::open(
-                &pk[1].1,
-                &MultilinearPolynomial::new(values[inputs_map[6]].to_dense()),
-                &pk[1].0,
-                &claims[6][0].point().to_vec(),
-                &claims[6][0].value(),
-                &mut transcript,
-            )
-            .expect("failed to open `e` lookup table commitment");
-
-            Pcs::open(
-                &pk[2].1,
-                &MultilinearPolynomial::new(values[inputs_map[8]].to_dense()),
-                &pk[2].0,
-                &claims[8][0].point().to_vec(),
-                &claims[8][0].value(),
-                &mut transcript,
-            )
-            .expect("failed to open `k1` lookup table commitment");
-        });
-
-        // let values = circuit.evaluate(expected_values);
-        // assert_polys_eq(&values, &expected_values);
 
         transcript.into_proof()
     }
@@ -669,12 +497,12 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
         >,
     >(
         &self,
-        vk: VerifierKey<F, F, Pcs>,
+        vk: VerifierKey<F, F>,
         inputs: Vec<BoxMultilinearPoly<'static, F, F>>,
         proof: &[u8],
         ct0is: Vec<Vec<String>>,
     ) {
-        let (preprocessing, vk) = vk;
+        let preprocessing = vk;
         let mut transcript = Keccak256Transcript::from_proof(proof);
 
         let ct0is_claim = {
@@ -696,9 +524,7 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
             EvalClaim::new(point, value)
         };
 
-        let mut output_claims = vec![EvalClaim::new(vec![], F::ZERO); 4]; // 4 + self.block.num_reps // should be self.block.num_reps * 2 (for r2is range checks)
-        output_claims.push(ct0is_claim);
-        // let output_claims = vec![ct0is_claim];
+        let output_claims = vec![EvalClaim::new(vec![], F::ZERO), ct0is_claim];
 
         let circuit = {
             let mut circuit = Circuit::<F, F>::default();
@@ -708,35 +534,6 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
 
         let input_claims = info_span!("GKR verify")
             .in_scope(|| verify_gkr(&circuit, &output_claims, &mut transcript).unwrap());
-
-        info_span!("LogUp IOP verify").in_scope(|| {
-            Pcs::verify(
-                &vk[0].1,
-                &vk[0].0,
-                &input_claims[4][0].point().to_vec(),
-                &input_claims[4][0].value(),
-                &mut transcript,
-            )
-            .expect("failed to verify `s` lookup table commitment");
-
-            Pcs::verify(
-                &vk[1].1,
-                &vk[1].0,
-                &input_claims[6][0].point().to_vec(),
-                &input_claims[6][0].value(),
-                &mut transcript,
-            )
-            .expect("failed to verify `e` lookup table commitment");
-
-            // Pcs::verify(
-            //     &vk[2].1,
-            //     &vk[2].0,
-            //     &input_claims[8][0].point().to_vec(),
-            //     &input_claims[8][0].value(),
-            //     &mut transcript,
-            // )
-            // .expect("failed to verify `k1` lookup table commitment");
-        });
 
         izip_eq!(inputs, input_claims).for_each(|(input, claims)| {
             claims
@@ -749,22 +546,6 @@ impl<const POLY_LOG2_SIZE: usize> BfvEncrypt<POLY_LOG2_SIZE> {
         assert!(self.block.num_reps.is_power_of_two());
         self.log2_size() + self.block.num_reps.next_power_of_two().ilog2() as usize
     }
-}
-
-fn root_of_unity<F: PrimeField>(k: usize) -> F {
-    assert!(k <= F::S as usize);
-    squares(F::ROOT_OF_UNITY).nth(F::S as usize - k).unwrap()
-}
-
-pub fn radix2_ifft<F: PrimeField>(buf: &mut [F], omega: F) {
-    let n = buf.len();
-    let omega_inv = omega.invert().unwrap();
-
-    radix2_fft(buf, omega_inv);
-
-    // Normalize the result by dividing by n
-    let n_inv = F::from(n as u64).invert().unwrap(); // Assuming `Field` has an inverse method
-    buf.iter_mut().for_each(|x| *x *= &n_inv);
 }
 
 fn relay_mul_const<F>(w: (usize, usize), c: F) -> VanillaGate<F> {
@@ -780,15 +561,11 @@ mod test {
     use super::*;
     use gkr::util::dev::seeded_std_rng;
     use goldilocks::Goldilocks;
-    use halo2_curves::bn256;
-    use rayon::ThreadPoolBuilder;
 
     use std::{fs::File, io::Read};
     use tracing::{info_span, level_filters::LevelFilter};
     use tracing_forest::ForestLayer;
-    use tracing_subscriber::{
-        fmt::format, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Registry,
-    };
+    use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Registry};
 
     // type F = bn256::Fr;
     type F = Goldilocks;
@@ -821,8 +598,7 @@ mod test {
         let proof =
             info_span!("FHE_enc prove").in_scope(|| bfv.prove::<F, Brakedown<F>>(&args, pk));
 
-        let (inputs, ctis_poly) =
-            info_span!("parse inputs").in_scope(|| bfv.get_inputs::<F, F>(&args));
+        let (inputs, _) = info_span!("parse inputs").in_scope(|| bfv.get_inputs::<F, F>(&args));
 
         info_span!("FHE_enc verify")
             .in_scope(|| bfv.verify::<F, Brakedown<F>>(vk, inputs, &proof, args.ct0is));

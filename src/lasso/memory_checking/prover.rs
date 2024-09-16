@@ -24,7 +24,7 @@ pub struct MemoryCheckingProver<'a, F: PrimeField, E: ExtensionField<F>> {
     /// chunks with the same bits size
     chunks: Vec<Chunk<'a, F, E>>,
     /// GKR initial polynomials for each memory
-    pub memories: Vec<MemoryGKR<'a, F, E>>,
+    memories: Vec<MemoryGKR<'a, F, E>>,
     // gamma: F,
 }
 
@@ -37,9 +37,7 @@ impl<'a, F: PrimeField + Field, E: ExtensionField<F>> MemoryCheckingProver<'a, F
         let tau = tau.as_bases()[0];
         let gamma = gamma.as_bases()[0];
         let num_reads = chunks[0].num_reads();
-        println!("num_reads: {}", num_reads);
         let memory_size = 1 << chunks[0].chunk_bits();
-        println!("memory_size: {}", memory_size);
 
         let hash = |a: &F, v: &F, t: &F| -> F { *a + *v * gamma + *t * gamma.square() - tau };
 
