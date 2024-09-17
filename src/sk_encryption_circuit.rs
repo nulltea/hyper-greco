@@ -420,6 +420,7 @@ impl<Params: BfvSkEncryptConstans<K>, const K: usize> BfvEncrypt<Params, K> {
 
     pub fn prove<
         F: PrimeField,
+        E: ExtensionField<F>,
         Pcs: PolynomialCommitmentScheme<
             F,
             Polynomial = MultilinearPolynomial<F>,
@@ -428,20 +429,19 @@ impl<Params: BfvSkEncryptConstans<K>, const K: usize> BfvEncrypt<Params, K> {
     >(
         &self,
         args: &BfvSkEncryptArgs,
-        pk: ProverKey<F, F>,
+        pk: ProverKey<F, E>,
     ) -> Vec<u8> {
         let preprocessing = pk;
         let mut transcript = Keccak256Transcript::<Vec<u8>>::default();
 
         let circuit = info_span!("init circuit").in_scope(|| {
-            let mut circuit = Circuit::<F, F>::default();
+            let mut circuit = Circuit::<F, E>::default();
             self.configure(&mut circuit, preprocessing);
             circuit
         });
 
         let (values, output_claims) = info_span!("wintess gen").in_scope(|| {
-            let (inputs, ctis_poly) =
-                info_span!("parse inputs").in_scope(|| self.get_inputs::<F, F>(args));
+            let (inputs, ctis_poly) = info_span!("parse inputs").in_scope(|| self.get_inputs(args));
 
             let values = info_span!("eval circuit").in_scope(|| circuit.evaluate(inputs));
 
@@ -451,7 +451,7 @@ impl<Params: BfvSkEncryptConstans<K>, const K: usize> BfvEncrypt<Params, K> {
                 EvalClaim::new(point.clone(), value)
             });
 
-            let output_claims = vec![EvalClaim::new(vec![], F::ZERO), ct0is_claim];
+            let output_claims = vec![EvalClaim::new(vec![], E::ZERO), ct0is_claim];
 
             (values, output_claims)
         });
@@ -465,6 +465,7 @@ impl<Params: BfvSkEncryptConstans<K>, const K: usize> BfvEncrypt<Params, K> {
 
     pub fn verify<
         F: PrimeField,
+        E: ExtensionField<F>,
         Pcs: PolynomialCommitmentScheme<
             F,
             Polynomial = MultilinearPolynomial<F>,
@@ -472,10 +473,10 @@ impl<Params: BfvSkEncryptConstans<K>, const K: usize> BfvEncrypt<Params, K> {
         >,
     >(
         &self,
-        vk: VerifierKey<F, F>,
-        inputs: Vec<BoxMultilinearPoly<'static, F, F>>,
-        proof: &[u8],
+        vk: VerifierKey<F, E>,
+        inputs: Vec<BoxMultilinearPoly<'static, F, E>>,
         ct0is: Vec<Vec<String>>,
+        proof: &[u8],
     ) {
         let preprocessing = vk;
         let mut transcript = Keccak256Transcript::from_proof(proof);
@@ -500,11 +501,11 @@ impl<Params: BfvSkEncryptConstans<K>, const K: usize> BfvEncrypt<Params, K> {
                 EvalClaim::new(point, value)
             };
 
-            vec![EvalClaim::new(vec![], F::ZERO), ct0is_claim]
+            vec![EvalClaim::new(vec![], E::ZERO), ct0is_claim]
         });
 
         let circuit = info_span!("init circuit").in_scope(|| {
-            let mut circuit = Circuit::<F, F>::default();
+            let mut circuit = Circuit::<F, E>::default();
             self.configure(&mut circuit, preprocessing);
             circuit
         });
@@ -539,7 +540,8 @@ mod test {
 
     use super::*;
     use gkr::util::dev::seeded_std_rng;
-    use goldilocks::Goldilocks;
+    use goldilocks::{Goldilocks, GoldilocksExt2};
+    use halo2_curves::bn256::Fr;
 
     use paste::paste;
     use plonkish_backend::{pcs::multilinear::MultilinearBrakedown, util::code::BrakedownSpec6};
@@ -551,13 +553,67 @@ mod test {
     pub type Brakedown<F> =
         MultilinearBrakedown<F, plonkish_backend::util::hash::Keccak256, BrakedownSpec6>;
 
-    generate_sk_enc_test!(goldilocks, Goldilocks, Brakedown<Goldilocks>, 1024, 1, 27);
+    // Goldilocks prime tests
 
-    generate_sk_enc_test!(goldilocks, Goldilocks, Brakedown<Goldilocks>, 2048, 1, 52);
+    generate_sk_enc_test!(
+        "goldilocks",
+        Goldilocks,
+        GoldilocksExt2,
+        Brakedown<Goldilocks>,
+        1024,
+        1,
+        27
+    );
 
-    generate_sk_enc_test!(goldilocks, Goldilocks, Brakedown<Goldilocks>, 4096, 2, 55);
+    generate_sk_enc_test!(
+        "goldilocks",
+        Goldilocks,
+        GoldilocksExt2,
+        Brakedown<Goldilocks>,
+        2048,
+        1,
+        52
+    );
 
-    generate_sk_enc_test!(goldilocks, Goldilocks, Brakedown<Goldilocks>, 8192, 4, 55);
+    generate_sk_enc_test!(
+        "goldilocks",
+        Goldilocks,
+        GoldilocksExt2,
+        Brakedown<Goldilocks>,
+        4096,
+        2,
+        55
+    );
 
-    generate_sk_enc_test!(goldilocks, Goldilocks, Brakedown<Goldilocks>, 16384, 8, 54);
+    generate_sk_enc_test!(
+        "goldilocks",
+        Goldilocks,
+        GoldilocksExt2,
+        Brakedown<Goldilocks>,
+        8192,
+        4,
+        55
+    );
+
+    generate_sk_enc_test!(
+        "goldilocks",
+        Goldilocks,
+        GoldilocksExt2,
+        Brakedown<Goldilocks>,
+        16384,
+        8,
+        54
+    );
+
+    // Bn254 prime tests
+
+    generate_sk_enc_test!("bn254", Fr, Fr, Brakedown<Fr>, 1024, 1, 27);
+
+    generate_sk_enc_test!("bn254", Fr, Fr, Brakedown<Fr>, 2048, 1, 52);
+
+    generate_sk_enc_test!("bn254", Fr, Fr, Brakedown<Fr>, 4096, 2, 55);
+
+    generate_sk_enc_test!("bn254", Fr, Fr, Brakedown<Fr>, 8192, 4, 55);
+
+    generate_sk_enc_test!("bn254", Fr, Fr, Brakedown<Fr>, 16384, 8, 54);
 }

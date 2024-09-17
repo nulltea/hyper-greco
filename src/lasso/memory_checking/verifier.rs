@@ -67,10 +67,10 @@ impl<F: PrimeField, E: ExtensionField<F>, const M: usize> Chunk<F, E, M> {
         y: &[E],
         hash: impl Fn(&E, &E, &E) -> E,
         transcript: &mut dyn TranscriptRead<F, E>,
-    ) -> Result<(E, E, E, Vec<E>), Error> {
+    ) -> Result<(), Error> {
         let [dim_x, read_ts_poly_x, final_cts_poly_y] =
-            transcript.read_felts_as_exts(3)?.try_into().unwrap();
-        let e_poly_xs = transcript.read_felts_as_exts(self.num_memories())?;
+            transcript.read_felt_exts(3)?.try_into().unwrap();
+        let e_poly_xs = transcript.read_felt_exts(self.num_memories())?;
         let id_poly_y = inner_product(
             iter::successors(Some(E::ONE), |power_of_two| Some(power_of_two.double()))
                 .take(y.len()),
@@ -80,7 +80,7 @@ impl<F: PrimeField, E: ExtensionField<F>, const M: usize> Chunk<F, E, M> {
             assert_eq!(read_xs[i], hash(&dim_x, &e_poly_xs[i], &read_ts_poly_x));
             assert_eq!(
                 write_xs[i],
-                hash(&dim_x, &e_poly_xs[i], &(read_ts_poly_x + F::ONE))
+                hash(&dim_x, &e_poly_xs[i], &(read_ts_poly_x + E::ONE))
             );
             let subtable_poly_y = memory.subtable.evaluate_mle(y, M);
 
@@ -90,7 +90,8 @@ impl<F: PrimeField, E: ExtensionField<F>, const M: usize> Chunk<F, E, M> {
                 hash(&id_poly_y, &subtable_poly_y, &final_cts_poly_y)
             );
         });
-        Ok((dim_x, read_ts_poly_x, final_cts_poly_y, e_poly_xs))
+        // Ok((dim_x, read_ts_poly_x, final_cts_poly_y, e_poly_xs))
+        Ok(())
     }
 }
 
@@ -133,6 +134,11 @@ impl<F: PrimeField, E: ExtensionField<F>, const M: usize> MemoryCheckingVerifier
         tau: &E,
         transcript: &mut dyn TranscriptRead<F, E>,
     ) -> Result<(), Error> {
+        // warning: this cast is insecure
+        // TODO: need to rewrite memory checking to work over the extension field
+        let tau = tau.as_bases()[0];
+        let gamma = gamma.as_bases()[0];
+
         let num_memories: usize = self.chunks.iter().map(|chunk| chunk.num_memories()).sum();
         let memory_bits = self.chunks[0].chunk_bits();
         let (read_write_xs, _) = Self::verify_grand_product(
@@ -151,26 +157,20 @@ impl<F: PrimeField, E: ExtensionField<F>, const M: usize> MemoryCheckingVerifier
 
         let hash = |a: &E, v: &E, t: &E| -> E { *a + *v * gamma + *t * gamma.square() - tau };
         let mut offset = 0;
-        let _ = self
-            .chunks
-            .iter()
-            .map(|chunk| {
-                let num_memories = chunk.num_memories();
-                let result = chunk.verify_memories(
-                    &read_xs[offset..offset + num_memories],
-                    &write_xs[offset..offset + num_memories],
-                    &init_ys[offset..offset + num_memories],
-                    &final_read_ys[offset..offset + num_memories],
-                    &y,
-                    hash,
-                    transcript,
-                );
-                offset += num_memories;
-                result
-            })
-            .collect::<Result<Vec<(E, E, E, Vec<E>)>, Error>>()?
-            .into_iter()
-            .multiunzip::<(Vec<_>, Vec<_>, Vec<_>, Vec<Vec<_>>)>();
+
+        self.chunks.iter().for_each(|chunk| {
+            let num_memories = chunk.num_memories();
+            let _ = chunk.verify_memories(
+                &read_xs[offset..offset + num_memories],
+                &write_xs[offset..offset + num_memories],
+                &init_ys[offset..offset + num_memories],
+                &final_read_ys[offset..offset + num_memories],
+                &y,
+                hash,
+                transcript,
+            );
+            offset += num_memories;
+        });
 
         Ok(())
     }

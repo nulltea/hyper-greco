@@ -33,9 +33,11 @@ impl<'a, F: PrimeField + Field, E: ExtensionField<F>> MemoryCheckingProver<'a, F
     // ...
     // T_{\alpha-k+1}[dim_c(x)], ..., T_{\alpha}[dim_c(x)]
     pub fn new(chunks: Vec<Chunk<'a, F, E>>, tau: &E, gamma: &E) -> Self {
-        // TODO: suppoer extension degree > 1
+        // warning: this cast is insecure
+        // TODO: need to rewrite memory checking to work over the extension field
         let tau = tau.as_bases()[0];
         let gamma = gamma.as_bases()[0];
+
         let num_reads = chunks[0].num_reads();
         let memory_size = 1 << chunks[0].chunk_bits();
 
@@ -83,7 +85,6 @@ impl<'a, F: PrimeField + Field, E: ExtensionField<F>> MemoryCheckingProver<'a, F
         Self {
             chunks,
             memories: memories_gkr,
-            // gamma: *gamma,
         }
     }
 
@@ -154,13 +155,7 @@ impl<'a, F: PrimeField + Field, E: ExtensionField<F>> MemoryCheckingProver<'a, F
         ])
     }
 
-    pub fn prove(
-        &mut self,
-        // points_offset: usize,
-        // lookup_opening_points: &mut Vec<Vec<F>>,
-        // lookup_opening_evals: &mut Vec<Evaluation<F>>,
-        transcript: &mut dyn TranscriptWrite<F, E>,
-    ) -> Result<(), Error> {
+    pub fn prove(&mut self, transcript: &mut dyn TranscriptWrite<F, E>) -> Result<(), Error> {
         let num_batching = self.memories.len() * 2;
 
         let (_, x) = Self::prove_grand_product(
@@ -203,7 +198,7 @@ impl<'a, F: PrimeField + Field, E: ExtensionField<F>> MemoryCheckingProver<'a, F
             let v_0s = chain![layers.last().unwrap()]
                 .map(|layer| {
                     let [v_l, v_r] = layer.polys().map(|poly| poly[0]);
-                    E::from_bases(&[v_l * v_r])
+                    (v_l * v_r).into()
                 })
                 .collect_vec();
 
@@ -232,12 +227,12 @@ impl<'a, F: PrimeField + Field, E: ExtensionField<F>> MemoryCheckingProver<'a, F
                 let (claimed_v_ys, _y) = result;
 
                 let num_vars = layers[0].num_vars();
-                let polys = layers.iter().flat_map(|layer| layer.polys());
+                let polys = layers.iter().flat_map(|layer| layer.polys()).collect_vec();
 
                 let (mut x, evals) = if num_vars == 0 {
                     (
                         vec![],
-                        polys.map(|poly| E::from_bases(&[poly[0]])).collect_vec(),
+                        polys.into_iter().map(|poly| poly[0].into()).collect_vec(),
                     )
                 } else {
                     let gamma = transcript.squeeze_challenge();
@@ -247,6 +242,7 @@ impl<'a, F: PrimeField + Field, E: ExtensionField<F>> MemoryCheckingProver<'a, F
                     let (_, x, evals) = {
                         let claim = Self::sum_check_claim(&claimed_v_ys, gamma);
                         let polys = polys
+                            .into_iter()
                             .map(|e_poly| {
                                 SumCheckPoly::Base::<_, _, _, BoxMultilinearPoly<E, E>>(e_poly)
                             })

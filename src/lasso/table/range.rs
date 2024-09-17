@@ -92,7 +92,7 @@ impl<F: PrimeField, E: ExtensionField<F>> LassoSubtable<F, E> for BoundSubtable<
 
                 if i == cutoff_log2 {
                     for k in 0..num_extra {
-                        let mut term = E::from_bases(&[F::from(g_base + k)]);
+                        let mut term: E = F::from(g_base + k).into();
                         for j in 0..cutoff_log2 {
                             if (k & (1 << j)) != 0 {
                                 term *= point[j];
