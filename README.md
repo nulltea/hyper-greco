@@ -5,7 +5,7 @@ GKR prover for [BFV](https://www.inferati.com/blog/fhe-schemes-bfv) Secret Key E
 ## Approach
 
 - This implementation uses linear-time GKR ([Libra](https://eprint.iacr.org/2019/317)) prove system.
-- FHE input uni polys generated via [circuit_sk.py](https://github.com/nulltea/gkreco/blob/1019a9a0a9a174785232cc8e2a21e04861d30ed2/scripts/circuit_sk.py) are converted to multilinear polys on boolean domain.
+- FHE input uni polys generated via [circuit_sk.py](https://github.com/nulltea/gkreco/blob/1019a9a0a9a174785232cc8e2a21e04861d30ed2/scripts/circuit_sk.py) are converted to multilinear polys on a boolean domain.
 - Polynomial multiplication in the circuit is computed as `evaluation (FFT) -> dot product -> interpolation (IFFT)`
   - see 1-D convolution in [zkCNN paper](https://eprint.iacr.org/2021/673.pdf#page=9)
 - Range checks for all input polys are batched and proved via a single Lasso node.
@@ -19,7 +19,7 @@ Another downside of using LogUp is committing to lookup tables and multiplicitie
 
 Finally, while multiple lookup input columns can be batched for a single lookup table in LogUp, batching multiple lookup types (range bounds in this case) is impossible with LogUp, afaik. On the contrary, one can batch many lookup types and verify them via a single primary (collation) sum check and two grand product argument GKRs. The approach is inspired by Jolt's [instructions lookups](https://jolt.a16zcrypto.com/how/instruction_lookups.html).
 
-I should note that since `S_BOUND` and `E_BOUND` are small and each only requires a single subtable/dimension, when batching together with other larger-table lookups (which require multiple dimensions per suitable) -- there is a somewhat redundant overhead compared to, say running `S_BOUND` and `E_BOUND` as LogUp nodes. However, when accounting for witness generation and commitment/opening time is also needed for LogUp batched, Lasso is still more practical. One not yet explored optimization is to have two Lasso nodes: one for small tables and one for large ones.
+I should note that since `S_BOUND` and `E_BOUND` are small and each only requires a single subtable/dimension, when batching together with other larger-table lookups (which require multiple dimensions per suitable) -- there is a somewhat redundant overhead compared to, say running `S_BOUND` and `E_BOUND` as LogUp nodes. However, when accounting for witness generation and commitment/opening time also needed for LogUp batched, Lasso is still more practical. One approach that has not yet been explored is to have two Lasso nodes: one for small tables and one for large ones.
 
 Version with LogUp checks and LogUP IOP can be found in this [commit](https://github.com/nulltea/gkreco/blob/67eccb9f57a4291a929e38503b8d246d7d7dc8a1/src/sk_encryption_circuit.rs).
 
@@ -33,11 +33,11 @@ Field/extension field: `Goldilocks, GoldilocksExt2`
 
 |  $n$   | $\log q_i$ | $k$ | Witness Gen | Proof Gen | Proof Verify |
 | :----: | :--------: | :-: | :---------: | :-------: | :----------: |
-| 1024   |     27     |  1  |    7.23 ms  | 108 ms    | 23.5 ms      |
-| 2048   |     52     |  1  |   11.9 ms   | 168 ms    | 10.9 ms      |
-| 4096   |     55     |  2  |  24.73 ms   | 270 ms    | 23.5 ms      |
-| 8192   |     55     |  4  |   81.5 ms   | 640 ms    | 84.9 ms      |
-| 16384  |     54     |  8  |   310 ms    | 1.71 s    | 1.08 s       |
+| 1024   |     27     |  1  |    7.23 ms  | 108 ms    | 10.9ms       |
+| 2048   |     52     |  1  |   11.9 ms   | 168 ms    | 9.84ms       |
+| 4096   |     55     |  2  |  24.73 ms   | 270 ms    | 10.8ms       |
+| 8192   |     55     |  4  |   81.5 ms   | 640 ms    | 20.9ms       |
+| 16384  |     54     |  8  |   310 ms    | 1.71 s    | 84.9 s       |
 
 Field/extension field: `BN254, BN254`
 
@@ -46,7 +46,7 @@ Field/extension field: `BN254, BN254`
 | 1024   |     27     |  1  | 39.0 ms     | 236 ms    | 22.0 ms      |
 | 2048   |     52     |  1  | 77.8 ms     | 308 ms    | 10.1 ms      |
 | 4096   |     55     |  2  | 232.2 ms    | 575 ms    | 16.3 ms      |
-| 8192   |     55     |  4  | 845 ms      | 1.71 s    | 16.3 ms      |
+| 8192   |     55     |  4  | 845 ms      | 1.71 s    | 36.0ms       |
 |16384   |     54     |  8  | 3.05 s      | 5.37 s    | 166 ms       |
 
 For comparison see original [Greco benchmarks](https://github.com/privacy-scaling-explorations/greco?tab=readme-ov-file#results) (proved via Halo2)
@@ -92,8 +92,8 @@ pie showData title GKR Verify (Goldilocks) - 79.7ms
 ```
 
 ## Known issues & limitations 
-- GKR library used is not zero knowledge thus may leak some sensitive information
-- Memory checking in Lasso not uses challenges sampled from base field, which isn't secure enough when proving over the Goldilocks field
+- GKR library used is not zero knowledge, thus may leak some sensitive information
+- Memory checking in Lasso does not use challenges sampled from the base field, which isn't secure enough when proving over the Goldilocks field
 - Number of ciphertexts ($k$) must be a power of two
 
 ## Acknowledgements
