@@ -50,7 +50,7 @@ Field/extension field: `BN254, BN254`
 | 4096   |     55     |  2  | 232.2 ms    | 575 ms    | 16.3 ms      |
 | 8192   |     55     |  4  | 845 ms      | 1.65 s    | 36.0ms       |
 | 16384  |     54     |  8  | 3.55 s      | 4.87 s    | 166 ms       |
-| 32768  |     59     |  8  | 12.2 s      | 28.8 s    | 529 ms       |
+| 32768  |     59     |  16 | 12.2 s      | 28.8 s    | 529 ms       |
 
 
 For comparison, see original [Greco benchmarks](https://github.com/privacy-scaling-explorations/greco?tab=readme-ov-file#results) (proved via Halo2 on M2 Macbook Pro with 12 cores and 32GB of RAM)
@@ -102,7 +102,7 @@ pie showData title GKR Verify (Goldilocks) - 79.7ms
 
 ## Known issues & limitations 
 - GKR library used is not zero knowledge, thus may leak some sensitive information
-- Memory checking in Lasso does not use challenges sampled from the base field, which isn't secure enough when proving over the Goldilocks field
+- Memory checking in Lasso uses challenge values sampled from the base field (not the extension field), which isn't secure enough when proving over the Goldilocks field
 - Number of ciphertexts ($k$) must be a power of two
 
 ## Acknowledgements
