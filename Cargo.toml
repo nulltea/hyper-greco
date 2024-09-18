@@ -71,8 +71,8 @@ panic = "abort"
 incremental = false
 
 [patch."https://github.com/han0110/gkr"]
-# gkr = { git = "https://github.com/nulltea/gkr-lasso" }
-gkr = { path = "../examples/gkr/gkr" }
+gkr = { git = "https://github.com/nulltea/gkr-lasso" }
+# gkr = { path = "../examples/gkr/gkr" }
 
 [patch."https://github.com/han0110/goldilocks"]
 goldilocks = { git = "https://github.com/nulltea/goldilocks", branch = "to_canonical_repr" }

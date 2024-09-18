@@ -200,7 +200,7 @@ impl<F: PrimeField, E: ExtensionField<F>> LookupType<F, E> for RangeLookup<F, E>
         _C: usize,
         M: usize,
     ) -> Expression<E, usize> {
-        Expression::distribute_powers(expressions, E::from_bases(&[F::from(M as u64)]))
+        Expression::distribute_powers(expressions, F::from(M as u64).into())
     }
 
     // SubtableIndices map subtable to memories

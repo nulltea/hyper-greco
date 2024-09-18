@@ -33,11 +33,13 @@ Field/extension field: `Goldilocks, GoldilocksExt2`
 
 |  $n$   | $\log q_i$ | $k$ | Witness Gen | Proof Gen | Proof Verify |
 | :----: | :--------: | :-: | :---------: | :-------: | :----------: |
-| 1024   |     27     |  1  |    7.23 ms  | 108 ms    | 10.9ms       |
-| 2048   |     52     |  1  |   11.9 ms   | 168 ms    | 9.84ms       |
-| 4096   |     55     |  2  |  24.73 ms   | 270 ms    | 10.8ms       |
-| 8192   |     55     |  4  |   81.5 ms   | 640 ms    | 20.9ms       |
-| 16384  |     54     |  8  |   310 ms    | 1.71 s    | 84.9 s       |
+| 1024   |     27     |  1  |    7.23 ms  | 103 ms    | 10.9ms       |
+| 2048   |     52     |  1  |   11.9 ms   | 159 ms    | 9.84ms       |
+| 4096   |     55     |  2  |  24.73 ms   | 265 ms    | 10.8ms       |
+| 8192   |     55     |  4  |   81.5 ms   | 588 ms    | 20.9ms       |
+| 16384  |     54     |  8  |   310 ms    | 1.51 s    | 84.9ms       |
+| 32768  |     59     |  16 |   1.04s     | 5.06 s    | 107.9ms      |
+
 
 Field/extension field: `BN254, BN254`
 
@@ -46,8 +48,10 @@ Field/extension field: `BN254, BN254`
 | 1024   |     27     |  1  | 39.0 ms     | 236 ms    | 22.0 ms      |
 | 2048   |     52     |  1  | 77.8 ms     | 308 ms    | 10.1 ms      |
 | 4096   |     55     |  2  | 232.2 ms    | 575 ms    | 16.3 ms      |
-| 8192   |     55     |  4  | 845 ms      | 1.71 s    | 36.0ms       |
-|16384   |     54     |  8  | 3.05 s      | 5.37 s    | 166 ms       |
+| 8192   |     55     |  4  | 845 ms      | 1.65 s    | 36.0ms       |
+| 16384  |     54     |  8  | 3.55 s      | 4.87 s    | 166 ms       |
+| 32768  |     59     |  8  | 12.2 s      | 28.8 s    | 529 ms       |
+
 
 For comparison see original [Greco benchmarks](https://github.com/privacy-scaling-explorations/greco?tab=readme-ov-file#results) (proved via Halo2)
 

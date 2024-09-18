@@ -605,6 +605,16 @@ mod test {
         54
     );
 
+    generate_sk_enc_test!(
+        "goldilocks",
+        Goldilocks,
+        GoldilocksExt2,
+        Brakedown<Goldilocks>,
+        32768,
+        16,
+        59
+    );
+
     // Bn254 prime tests
 
     generate_sk_enc_test!("bn254", Fr, Fr, Brakedown<Fr>, 1024, 1, 27);
@@ -616,4 +626,6 @@ mod test {
     generate_sk_enc_test!("bn254", Fr, Fr, Brakedown<Fr>, 8192, 4, 55);
 
     generate_sk_enc_test!("bn254", Fr, Fr, Brakedown<Fr>, 16384, 8, 54);
+
+    generate_sk_enc_test!("bn254", Fr, Fr, Brakedown<Fr>, 32768, 16, 59);
 }
