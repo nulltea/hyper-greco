@@ -1,0 +1,39 @@
+[package]
+name = "bfv-gkr"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+itertools.workspace = true
+prettytable.workspace = true
+gkr.workspace = true
+rayon= {workspace = true }
+digest.workspace = true
+typenum.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-forest.workspace = true
+plonkish_backend.workspace = true
+strum.workspace = true
+strum_macros.workspace = true
+enum_dispatch.workspace = true
+ark-std.workspace = true
+fixedbitset.workspace = true
+paste.workspace = true
+lasso-gkr = { path = "../lasso" }
+
+[dev-dependencies]
+paste.workspace = true
+serial_test.workspace = true
+gkr = { workspace = true, features = ["dev"] }
+criterion.workspace = true
+goldilocks.workspace = true
+halo2_curves.workspace = true
+blake3.workspace = true
+
+
+
+

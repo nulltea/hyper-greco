@@ -414,28 +414,12 @@ def main(args):
     # Construct the dynamic filename
     filename = f"sk_enc_{args.n}_{qis_len}x{qis_bitsize}_{args.t}.json"
 
-    output_path = os.path.join("src", "data", filename)
+    output_path = os.path.join("bfv-gkr", "src", "data", filename)
 
     with open(output_path, 'w') as f:
         json.dump(json_input, f)
 
-    # Initialize a structure to hold polynomials with zero coefficients. This will be used at key generation.
-    # json_input_zeroes = {
-    #     "s": ["0" for _ in s_assigned.coefficients],
-    #     "e": ["0" for _ in e_assigned.coefficients],
-    #     "k1": ["0" for _ in k1_assigned.coefficients],
-    #     "r2is": [["0" for _ in r2i.coefficients] for r2i in r2is_assigned],
-    #     "r1is": [["0" for _ in r1i.coefficients] for r1i in r1is_assigned],
-    #     "ais": [["0" for _ in ai_in_p.coefficients] for ai_in_p in ais_in_p],
-    #     "ct0is": [["0" for _ in ct0i_in_p.coefficients] for ct0i_in_p in ct0is_in_p],
-    # }
-
-    # output_path = os.path.join("src", "data", f"sk_enc_{args.n}_{qis_len}x{qis_bitsize}_{args.t}_zeroes.json")
-
-    # with open(output_path, 'w') as f:
-    #     json.dump(json_input_zeroes, f)
-
-    output_path = os.path.join("src", "constants", f"sk_enc_constants_{args.n}_{qis_len}x{qis_bitsize}_{args.t}.rs")
+    output_path = os.path.join("bfv-gkr", "src", "constants", f"sk_enc_constants_{args.n}_{qis_len}x{qis_bitsize}_{args.t}.rs")
 
     type_name = f"SkEnc{args.n}_{qis_len}x{qis_bitsize}_{args.t}"
     with open(output_path, 'w') as f:

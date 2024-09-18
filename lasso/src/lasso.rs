@@ -1,3 +1,6 @@
+use crate::memory_checking::{Chunk, Memory, MemoryCheckingProver};
+use crate::table::LookupId;
+pub use crate::table::{LassoSubtable, LookupType, SubtableId, SubtableIndices};
 use ark_std::log2;
 use gkr::{
     circuit::node::{CombinedEvalClaim, EvalClaim, Node},
@@ -14,7 +17,6 @@ use gkr::{
     },
     Error,
 };
-use memory_checking::{Chunk, Memory, MemoryCheckingProver};
 use plonkish_backend::{
     poly::multilinear::MultilinearPolynomial, util::arithmetic::usize_from_bits_le,
 };
@@ -24,12 +26,7 @@ use std::{
     iter,
     sync::Arc,
 };
-use table::LookupId;
-pub use table::{LassoSubtable, LookupType, SubtableId, SubtableIndices};
 use tracing::info_span;
-
-pub mod memory_checking;
-pub mod table;
 
 #[derive(Debug)]
 pub struct LassoNode<F: Field, E, const C: usize, const M: usize> {
@@ -350,17 +347,17 @@ impl<F: PrimeField, E: ExtensionField<F>, const C: usize, const M: usize> LassoN
         transcript: &mut dyn TranscriptRead<F, E>,
     ) -> Result<(), Error> {
         let num_memories = preprocessing.num_memories;
-        let mut chunk_map: HashMap<usize, memory_checking::verifier::Chunk<F, E, M>> =
+        let mut chunk_map: HashMap<usize, crate::memory_checking::verifier::Chunk<F, E, M>> =
             HashMap::new();
         (0..num_memories).for_each(|memory_index| {
             let chunk_index = preprocessing.memory_to_dimension_index[memory_index];
             let subtable_poly = &preprocessing.subtables_by_idx.as_ref().unwrap()
                 [preprocessing.memory_to_subtable_index[memory_index]];
             let memory =
-                memory_checking::verifier::Memory::new(memory_index, subtable_poly.clone());
+                crate::memory_checking::verifier::Memory::new(memory_index, subtable_poly.clone());
 
             if let std::collections::hash_map::Entry::Vacant(e) = chunk_map.entry(chunk_index) {
-                e.insert(memory_checking::verifier::Chunk::new(
+                e.insert(crate::memory_checking::verifier::Chunk::new(
                     chunk_index,
                     log2(M) as usize,
                     memory,
@@ -376,7 +373,7 @@ impl<F: PrimeField, E: ExtensionField<F>, const C: usize, const M: usize> LassoN
         chunks.sort_by_key(|(chunk_index, _)| *chunk_index);
         let chunks = chunks.into_iter().map(|(_, chunk)| chunk).collect_vec();
 
-        let mem_check = memory_checking::verifier::MemoryCheckingVerifier::new(chunks);
+        let mem_check = crate::memory_checking::verifier::MemoryCheckingVerifier::new(chunks);
         mem_check.verify(num_vars, gamma, tau, transcript)
     }
 

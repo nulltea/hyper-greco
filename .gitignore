@@ -20,4 +20,4 @@ Cargo.lock
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-*/data/bn254/sk_enc_32768_16x59_65537.json
+**/data/bn254/sk_enc_32768_16x59_65537.json

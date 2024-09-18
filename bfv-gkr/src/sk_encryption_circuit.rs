@@ -1,10 +1,5 @@
 use crate::constants::BfvSkEncryptConstans;
-use crate::lasso::LassoPreprocessing;
-use crate::{
-    lasso::{table::range::RangeLookup, LassoNode},
-    poly::Poly,
-    transcript::Keccak256Transcript,
-};
+use crate::{transcript::Keccak256Transcript, poly::Poly};
 use gkr::izip_eq;
 use gkr::{
     chain_par,
@@ -20,6 +15,7 @@ use gkr::{
     verify_gkr,
 };
 use itertools::chain;
+use lasso_gkr::{table::range::RangeLookup, LassoNode, LassoPreprocessing};
 use plonkish_backend::pcs::PolynomialCommitmentScheme;
 use plonkish_backend::poly::multilinear::MultilinearPolynomial;
 use plonkish_backend::util::hash::{Keccak256, Output};
