@@ -25,10 +25,10 @@ Version with LogUp checks and LogUP IOP can be found in this [commit](https://gi
 
 ## Results
 
-To run
-```bash
-cargo test -r test_sk_enc_valid  -- --nocapture
-```
+Benchmarks run on M1 Macbook Pro with 10 cores and 32GB of RAM.
+
+The parameters have been chosen targeting 128-bit security level for different values of n. For more information on parameters choise, please check [Homomorphic Encryption Standard](https://homomorphicencryption.org/wp-content/uploads/2018/11/HomomorphicEncryptionStandardv1.1.pdf).
+
 Field/extension field: `Goldilocks, GoldilocksExt2`
 
 |  $n$   | $\log q_i$ | $k$ | Witness Gen | Proof Gen | Proof Verify |
@@ -53,7 +53,12 @@ Field/extension field: `BN254, BN254`
 | 32768  |     59     |  8  | 12.2 s      | 28.8 s    | 529 ms       |
 
 
-For comparison see original [Greco benchmarks](https://github.com/privacy-scaling-explorations/greco?tab=readme-ov-file#results) (proved via Halo2)
+For comparison, see original [Greco benchmarks](https://github.com/privacy-scaling-explorations/greco?tab=readme-ov-file#results) (proved via Halo2 on M2 Macbook Pro with 12 cores and 32GB of RAM)
+
+### Run yourself
+```bash
+cargo test -r test_sk_enc_valid  -- --nocapture
+```
 
 ## Profiling charts
 
