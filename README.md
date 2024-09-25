@@ -2,6 +2,9 @@
 
 GKR prover for [BFV](https://www.inferati.com/blog/fhe-schemes-bfv) Secret Key Encryption based on [Greco](https://github.com/privacy-scaling-explorations/greco) scheme.
 
+> [!WARNING]  
+> This is a research project and hasn't been audited. Don't use it production.
+
 ## Approach
 
 - This implementation uses linear-time GKR ([Libra](https://eprint.iacr.org/2019/317)) prove system.
