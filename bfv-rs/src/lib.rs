@@ -1,17 +1,17 @@
 mod poly;
 
 use concrete_ntt::native64::Plan32;
-use fhe::bfv::{
-    BfvParameters, BfvParametersBuilder, Ciphertext, Encoding, Plaintext, PublicKey, SecretKey,
+use bfv::{
+    BfvParameters, Ciphertext, Encoding, EncodingType, Plaintext, PolyCache, PublicKey, SecretKey
 };
-use fhe_math::{
-    rq::{Poly, Representation},
-    zq::{primes::generate_prime, Modulus},
+use bfv::{
+    Poly, Representation,
+    generate_prime, Modulus
 };
 use fhe_traits::*;
 use itertools::{izip, Itertools};
-use num_bigint::BigInt;
-use num_traits::{FromPrimitive, Num, Signed, ToPrimitive, Zero};
+use num_bigint::{BigInt, BigUint};
+use num_traits::{FromPrimitive, Num, One, Signed, ToPrimitive, Zero};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use rayon::iter::{ParallelBridge, ParallelIterator};
@@ -178,6 +178,7 @@ impl InputValidationVectors {
     /// * `ct` - Ciphertext from fhe.rs.
     /// * `pk` - Public Key from fhe.rs.
     pub fn compute(
+        params: &BfvParameters,
         pt: &Plaintext,
         u_rns: &Poly,
         e0_rns: &Poly,
@@ -186,16 +187,21 @@ impl InputValidationVectors {
         pk: &PublicKey,
     ) -> Result<InputValidationVectors, Box<dyn std::error::Error>> {
         // Get context, plaintext modulus, and degree
-        let params = &pk.par;
-        let ctx = params.ctx_at_level(pt.level())?;
-        let t = Modulus::new(params.plaintext())?;
-        let N: u64 = ctx.degree as u64;
+        let ctx = params.poly_ctx(&bfv::PolyType::P, pt.level());
+        let t = Modulus::new(params.plaintext_modulus);
+        let N: u64 = ctx.degree() as u64;
+
+        let mut product = BigUint::one();
+        ctx.moduli_ops().iter().for_each(|m| {
+            product *= BigUint::from_u64(m.modulus()).unwrap();
+        });
+
 
         // Calculate k1 (independent of qi), center and reverse
-        let q_mod_t = (ctx.modulus() % t.modulus())
+        let q_mod_t = (product % t.modulus())
             .to_u64()
             .ok_or_else(|| "Cannot convert BigInt to u64.".to_string())?; // [q]_t
-        let mut k1_u64 = pt.value.deref().to_vec(); // m
+        let mut k1_u64 = pt.value().deref().to_vec(); // m
         t.scalar_mul_vec(&mut k1_u64, q_mod_t); // k1 = [q*m]_t
         let mut k1: Vec<BigInt> = k1_u64.iter().map(|&x| BigInt::from(x)).rev().collect();
         reduce_and_center_coefficients_mut(&mut k1, &BigInt::from(t.modulus()));
@@ -205,12 +211,14 @@ impl InputValidationVectors {
         let mut e0_rns_copy = e0_rns.clone();
         let mut e1_rns_copy = e1_rns.clone();
 
-        u_rns_copy.change_representation(Representation::PowerBasis);
-        e0_rns_copy.change_representation(Representation::PowerBasis);
-        e1_rns_copy.change_representation(Representation::PowerBasis);
+        // e0_rns_copy.change_representation(Representation::PowerBasis);
+        // e1_rns_copy.change_representation(Representation::PowerBasis);
+        ctx.change_representation(&mut u_rns_copy, Representation::Coefficient);
+        ctx.change_representation(&mut e0_rns_copy, Representation::Coefficient);
+        ctx.change_representation(&mut e1_rns_copy, Representation::Coefficient);
 
         let u: Vec<BigInt> = unsafe {
-            ctx.moduli_operators()[0]
+            ctx.moduli_ops()[0]
                 .center_vec_vt(
                     u_rns_copy
                         .coefficients()
@@ -225,7 +233,7 @@ impl InputValidationVectors {
         };
 
         let e0: Vec<BigInt> = unsafe {
-            ctx.moduli_operators()[0]
+            ctx.moduli_ops()[0]
                 .center_vec_vt(
                     e0_rns_copy
                         .coefficients()
@@ -240,7 +248,7 @@ impl InputValidationVectors {
         };
 
         let e1: Vec<BigInt> = unsafe {
-            ctx.moduli_operators()[0]
+            ctx.moduli_ops()[0]
                 .center_vec_vt(
                     e1_rns_copy
                         .coefficients()
@@ -255,15 +263,15 @@ impl InputValidationVectors {
         };
 
         // Extract and convert ciphertext and plaintext polynomials
-        let mut ct0 = ct.c[0].clone();
-        let mut ct1 = ct.c[1].clone();
-        ct0.change_representation(Representation::PowerBasis);
-        ct1.change_representation(Representation::PowerBasis);
+        let mut ct0 = ct.c_ref()[0].clone();
+        let mut ct1 = ct.c_ref()[1].clone();
+        ctx.change_representation(&mut ct0, Representation::Coefficient);
+        ctx.change_representation(&mut ct1, Representation::Coefficient);
 
-        let mut pk0: Poly = pk.c.c[0].clone();
-        let mut pk1: Poly = pk.c.c[1].clone();
-        pk0.change_representation(Representation::PowerBasis);
-        pk1.change_representation(Representation::PowerBasis);
+        let mut pk0: Poly = pk.c0_ref().clone();
+        let mut pk1: Poly = pk.c1_ref().clone();
+        ctx.change_representation(&mut pk0, Representation::Coefficient);
+        ctx.change_representation(&mut pk1, Representation::Coefficient);
 
         // Create cyclotomic polynomial x^N + 1
         let mut cyclo = vec![BigInt::from(0u64); (N + 1) as usize];
@@ -271,7 +279,7 @@ impl InputValidationVectors {
         cyclo[N as usize] = BigInt::from(1u64); // x^0 term
 
         // Initialize matrices to store results
-        let num_moduli = ctx.moduli().len();
+        let num_moduli = ctx.moduli_count();
         let mut res = InputValidationVectors::new(num_moduli, N as usize);
 
         let plan = PlanNtt::try_new(N as usize * 2).unwrap();
@@ -292,7 +300,7 @@ impl InputValidationVectors {
             Vec<BigInt>,
             Vec<BigInt>,
         )> = izip!(
-            ctx.moduli_operators(),
+            ctx.moduli_ops(),
             ct0.coefficients().rows(),
             ct1.coefficients().rows(),
             pk0.coefficients().rows(),
@@ -323,7 +331,7 @@ impl InputValidationVectors {
                     reduce_and_center_coefficients_mut(&mut pk1i, &qi_bigint);
 
                     // k0qi = -t^{-1} mod qi
-                    let koqi_u64 = qi.inv(qi.neg(t.modulus())).unwrap();
+                    let koqi_u64 = qi.inv(qi.neg_mod_fast(t.modulus()));
                     let k0qi = BigInt::from(koqi_u64); // Do not need to center this
 
                     // ki = k1 * k0qi
@@ -645,263 +653,109 @@ impl InputValidationBounds {
         }
     }
 
-    /// Compute the input validation bounds from a set of BFV encryption parameters.
-    ///
-    /// # Arguments
-    ///
-    /// * `params` - A reference to the BFV parameters.
-    /// * `level` - The encryption level, which determines the number of moduli used.
-    ///
-    /// # Returns
-    ///
-    /// A new `InputValidationBounds` instance containing the bounds for vectors and polynomials
-    /// based on the BFV parameters and the specified level.
-    pub fn compute(
-        params: &Arc<BfvParameters>,
-        level: usize,
-    ) -> Result<InputValidationBounds, Box<dyn std::error::Error>> {
-        // Get cyclotomic degree and context at provided level
-        let N = BigInt::from(params.degree());
-        let t = BigInt::from(params.plaintext());
-        let ctx = params.ctx_at_level(level)?;
-
-        // Note: the secret key in fhe.rs is sampled from a discrete gaussian distribution
-        // rather than a ternary distribution as in bfv.py.
-        let gauss_bound = BigInt::from(
-            f64::ceil(6_f64 * f64::sqrt(params.variance() as f64))
-                .to_i64()
-                .ok_or_else(|| "Failed to convert variance to i64".to_string())?,
-        );
-        let u_bound = gauss_bound.clone();
-        let e_bound = gauss_bound.clone();
-        let ptxt_bound = (t - BigInt::from(1)) / BigInt::from(2);
-        let k1_bound = ptxt_bound.clone();
-
-        // Calculate qi-based bounds
-        let num_moduli = ctx.moduli().len();
-        let mut pk_bounds: Vec<BigInt> = vec![BigInt::zero(); num_moduli];
-        let mut r2_bounds: Vec<BigInt> = vec![BigInt::zero(); num_moduli];
-        let mut r1_bounds: Vec<BigInt> = vec![BigInt::zero(); num_moduli];
-        let mut p2_bounds: Vec<BigInt> = vec![BigInt::zero(); num_moduli];
-        let mut p1_bounds: Vec<BigInt> = vec![BigInt::zero(); num_moduli];
-        for (i, qi) in ctx.moduli_operators().iter().enumerate() {
-            let qi_bigint = BigInt::from(qi.modulus());
-            let qi_bound = (&qi_bigint - BigInt::from(1)) / BigInt::from(2);
-
-            // Calculate the k0qi for the bounds (these are also constant wrt BFV params)
-            let k0qi = BigInt::from(
-                qi.inv(qi.neg(params.plaintext()))
-                    .ok_or_else(|| "Failed to calculate modulus inverse for k0qi".to_string())?,
-            );
-
-            pk_bounds[i] = qi_bound.clone();
-            r2_bounds[i] = qi_bound.clone();
-            r1_bounds[i] = ((&N + 2) * &qi_bound + &gauss_bound + &ptxt_bound * BigInt::abs(&k0qi))
-                / &qi_bigint;
-            p2_bounds[i] = qi_bound.clone();
-            p1_bounds[i] = ((&N + 2) * &qi_bound + &gauss_bound) / &qi_bigint;
-        }
-
-        Ok(InputValidationBounds {
-            u: u_bound,
-            e: e_bound,
-            t: ptxt_bound,
-            k1: k1_bound,
-            pk: pk_bounds,
-            r1: r1_bounds,
-            r2: r2_bounds,
-            p1: p1_bounds,
-            p2: p2_bounds,
-        })
-    }
-
-    // /// Writes the input validation bounds to a file that can be imported as a Rust module.
+    // /// Compute the input validation bounds from a set of BFV encryption parameters.
     // ///
     // /// # Arguments
     // ///
-    // /// * `params` - Reference to BFV parameters to extract context information.
-    // /// * `output_file` - The path where the output constants should be saved.
+    // /// * `params` - A reference to the BFV parameters.
+    // /// * `level` - The encryption level, which determines the number of moduli used.
     // ///
-    // /// This function calculates certain constants like `k0i` values for each modulus `qi` and writes the bounds and other
-    // /// relevant constants in a Rust-friendly format to the file specified by `output_file`.
-    // fn to_file(
-    //     &self,
+    // /// # Returns
+    // ///
+    // /// A new `InputValidationBounds` instance containing the bounds for vectors and polynomials
+    // /// based on the BFV parameters and the specified level.
+    // pub fn compute(
     //     params: &Arc<BfvParameters>,
-    //     output_file: &str,
-    // ) -> Result<(), Box<dyn std::error::Error>> {
-    //     let level = params.moduli().len() - self.r2.len();
+    //     level: usize,
+    // ) -> Result<InputValidationBounds, Box<dyn std::error::Error>> {
+    //     // Get cyclotomic degree and context at provided level
+    //     let N = BigInt::from(params.degree);
+    //     let t = BigInt::from(params.plaintext_modulus);
     //     let ctx = params.ctx_at_level(level)?;
 
-    //     // Calculate k0i constants
-    //     let k0i_constants = ctx
-    //         .moduli_operators()
-    //         .iter()
-    //         .map(|qi| {
-    //             // Use the ? operator to propagate errors
-    //             let k0qi_value = qi
-    //                 .inv(qi.neg(params.plaintext()))
-    //                 .ok_or_else(|| "Failed to calculate modulus inverse for k0qi".to_string())?;
-    //             Ok(BigInt::from(k0qi_value))
-    //         })
-    //         .collect::<Result<Vec<BigInt>, String>>()?;
+    //     // Note: the secret key in fhe.rs is sampled from a discrete gaussian distribution
+    //     // rather than a ternary distribution as in bfv.py.
+    //     let gauss_bound = BigInt::from(
+    //         f64::ceil(6_f64 * f64::sqrt(params.variance() as f64))
+    //             .to_i64()
+    //             .ok_or_else(|| "Failed to convert variance to i64".to_string())?,
+    //     );
+    //     let u_bound = gauss_bound.clone();
+    //     let e_bound = gauss_bound.clone();
+    //     let ptxt_bound = (t - BigInt::from(1)) / BigInt::from(2);
+    //     let k1_bound = ptxt_bound.clone();
 
-    //     // Set the output file path
-    //     let output_path = Path::new("src")
-    //         .join("constants")
-    //         .join("pk_enc_constants")
-    //         .join(output_file);
+    //     // Calculate qi-based bounds
+    //     let num_moduli = ctx.moduli().len();
+    //     let mut pk_bounds: Vec<BigInt> = vec![BigInt::zero(); num_moduli];
+    //     let mut r2_bounds: Vec<BigInt> = vec![BigInt::zero(); num_moduli];
+    //     let mut r1_bounds: Vec<BigInt> = vec![BigInt::zero(); num_moduli];
+    //     let mut p2_bounds: Vec<BigInt> = vec![BigInt::zero(); num_moduli];
+    //     let mut p1_bounds: Vec<BigInt> = vec![BigInt::zero(); num_moduli];
+    //     for (i, qi) in ctx.moduli_operators().iter().enumerate() {
+    //         let qi_bigint = BigInt::from(qi.modulus());
+    //         let qi_bound = (&qi_bigint - BigInt::from(1)) / BigInt::from(2);
 
-    //     let mut file = File::create(output_path)?;
+    //         // Calculate the k0qi for the bounds (these are also constant wrt BFV params)
+    //         let k0qi = BigInt::from(
+    //             qi.inv(qi.neg(params.plaintext()))
+    //                 .ok_or_else(|| "Failed to calculate modulus inverse for k0qi".to_string())?,
+    //         );
 
-    //     // Writing the constants to the file
-    //     writeln!(file, "/// `N` is the degree of the cyclotomic polynomial defining the ring `Rq = Zq[X]/(X^N + 1)`.")?;
-    //     writeln!(file, "pub const N: usize = {};", params.degree())?;
+    //         pk_bounds[i] = qi_bound.clone();
+    //         r2_bounds[i] = qi_bound.clone();
+    //         r1_bounds[i] = ((&N + 2) * &qi_bound + &gauss_bound + &ptxt_bound * BigInt::abs(&k0qi))
+    //             / &qi_bigint;
+    //         p2_bounds[i] = qi_bound.clone();
+    //         p1_bounds[i] = ((&N + 2) * &qi_bound + &gauss_bound) / &qi_bigint;
+    //     }
 
-    //     let pk_bound_str = self
-    //         .pk
-    //         .iter()
-    //         .map(|x| x.to_string())
-    //         .collect::<Vec<String>>()
-    //         .join(", ");
-    //     writeln!(file, "/// The coefficients of the polynomial `pk0is` and `pk1is` should exist in the interval `[-PK_BOUND, PK_BOUND]`.")?;
-    //     writeln!(
-    //         file,
-    //         "pub const PK_BOUND: [u64; {}] = [{}];",
-    //         self.pk.len(),
-    //         pk_bound_str
-    //     )?;
-
-    //     writeln!(file, "/// The coefficients of the polynomial `pk1is` should exist in the interval `[-PK0_BOUND, PK0_BOUND]`.")?;
-
-    //     writeln!(file, "/// The coefficients of the polynomial `e` should exist in the interval `[-E_BOUND, E_BOUND]` where `E_BOUND` is the upper bound of the gaussian distribution with 𝜎 = 3.2.")?;
-    //     writeln!(file, "pub const E_BOUND: u64 = {};", self.e)?;
-
-    //     writeln!(file, "/// The coefficients of the polynomial `s` should exist in the interval `[-S_BOUND, S_BOUND]`.")?;
-    //     writeln!(file, "pub const U_BOUND: u64 = {};", self.u)?;
-
-    //     let r1_bounds_str = self
-    //         .r1
-    //         .iter()
-    //         .map(|x| x.to_string())
-    //         .collect::<Vec<String>>()
-    //         .join(", ");
-    //     writeln!(file, "/// The coefficients of the polynomials `r1is` should exist in the interval `[-R1_BOUND[i], R1_BOUND[i]]` where `R1_BOUND[i]` is equal to `(qi-1)/2`.")?;
-    //     writeln!(
-    //         file,
-    //         "pub const R1_BOUNDS: [u64; {}] = [{}];",
-    //         self.r1.len(),
-    //         r1_bounds_str
-    //     )?;
-
-    //     let r2_bounds_str = self
-    //         .r2
-    //         .iter()
-    //         .map(|x| x.to_string())
-    //         .collect::<Vec<String>>()
-    //         .join(", ");
-    //     writeln!(file, "/// The coefficients of the polynomials `r2is` should exist in the interval `[-R2_BOUND[i], R2_BOUND[i]]` where `R2_BOUND[i]` is equal to $\\frac{{(N+2) \\cdot \\frac{{q_i - 1}}{{2}} + B + \\frac{{t - 1}}{{2}} \\cdot |K_{{0,i}}|}}{{q_i}}`.")?;
-    //     writeln!(
-    //         file,
-    //         "pub const R2_BOUNDS: [u64; {}] = [{}];",
-    //         self.r2.len(),
-    //         r2_bounds_str
-    //     )?;
-
-    //     let p1_bounds_str = self
-    //         .p1
-    //         .iter()
-    //         .map(|x| x.to_string())
-    //         .collect::<Vec<String>>()
-    //         .join(", ");
-    //     writeln!(file, "/// The coefficients of the polynomials `p1is` should exist in the interval `[-P1_BOUND[i], P1_BOUND[i]]` where `P1_BOUND[i]` is equal to (((qis[i] - 1) / 2) * (n + 2) + b ) / qis[i].")?;
-    //     writeln!(
-    //         file,
-    //         "pub const P1_BOUNDS: [u64; {}] = [{}];",
-    //         self.p1.len(),
-    //         p1_bounds_str
-    //     )?;
-
-    //     let p2_bounds_str = self
-    //         .p2
-    //         .iter()
-    //         .map(|x| x.to_string())
-    //         .collect::<Vec<String>>()
-    //         .join(", ");
-    //     writeln!(file, "/// The coefficients of the polynomials `p2is` should exist in the interval `[-P2_BOUND[i], P2_BOUND[i]]` where `P2_BOUND[i]` is equal to (qis[i] - 1) / 2.")?;
-    //     writeln!(
-    //         file,
-    //         "pub const P2_BOUNDS: [u64; {}] = [{}];",
-    //         self.p2.len(),
-    //         p2_bounds_str
-    //     )?;
-
-    //     writeln!(file, "/// The coefficients of `k1` should exist in the interval `[-K1_BOUND, K1_BOUND]` where `K1_BOUND` is equal to `(t-1)/2`.")?;
-    //     writeln!(file, "pub const K1_BOUND: u64 = {};", self.k1)?;
-
-    //     let qis_str = ctx
-    //         .moduli()
-    //         .iter()
-    //         .map(|x| format!("\"{}\"", x))
-    //         .collect::<Vec<String>>()
-    //         .join(", ");
-    //     writeln!(file, "/// List of scalars `qis` such that `qis[i]` is the modulus of the i-th CRT basis of `q` (ciphertext space modulus).")?;
-    //     writeln!(
-    //         file,
-    //         "pub const QIS: [&str; {}] = [{}];",
-    //         ctx.moduli().len(),
-    //         qis_str
-    //     )?;
-
-    //     let k0is_str = k0i_constants
-    //         .iter()
-    //         .map(|x| format!("\"{}\"", x))
-    //         .collect::<Vec<String>>()
-    //         .join(", ");
-    //     writeln!(file, "/// List of scalars `k0is` such that `k0i[i]` is equal to the negative of the multiplicative inverses of t mod qi.")?;
-    //     writeln!(
-    //         file,
-    //         "pub const K0IS: [&str; {}] = [{}];",
-    //         k0i_constants.len(),
-    //         k0is_str
-    //     )?;
-
-    //     Ok(())
+    //     Ok(InputValidationBounds {
+    //         u: u_bound,
+    //         e: e_bound,
+    //         t: ptxt_bound,
+    //         k1: k1_bound,
+    //         pk: pk_bounds,
+    //         r1: r1_bounds,
+    //         r2: r2_bounds,
+    //         p1: p1_bounds,
+    //         p2: p2_bounds,
+    //     })
     // }
 }
 
-pub fn gen_witness(n_log2: usize) -> Result<(), Box<dyn std::error::Error>> {
+
+pub fn gen_witness(params: BfvParameters, ct: Ciphertext, u: Poly, e0: Poly, e1: Poly, pt: Plaintext, pk: PublicKey) -> Result<(), Box<dyn std::error::Error>> {
     // TODO: add method `default_parameter_128(plaintext_nbits: usize, log2_n: usize) -> BfvParameters` in fhe-rs fork
     // TODO: and cache?
-    let params = default_parameters_128(20, n_log2);
-    let N: u64 = params.degree() as u64;
+    // let params = default_parameters_128(20, n_log2);
+    let N: u64 = params.degree as u64;
 
     // Use a seedable rng for experimental reproducibility
     let mut rng = StdRng::seed_from_u64(0);
 
-    // Generate the secret and public keys
-    let sk = SecretKey::random(&params, &mut rng);
-    let pk = PublicKey::new(&sk, &mut rng);
+    // Generate the secret and public keys;
 
     // Sample a message and encrypt
     // let m = t.random_vec(N as usize, &mut rng);
     let m: Vec<i64> = (-(N as i64 / 2)..(N as i64 / 2)).collect(); // m here is from lowest degree to largest as input into fhe.rs (REQUIRED)
-    let pt = Plaintext::try_encode(&m, Encoding::poly(), &params)?;
-    let (ct, u_rns, e0_rns, e1_rns) = pk.try_encrypt_extended(&pt, &mut rng)?;
+    // let pt = Plaintext::try_encode(&m, Encoding::poly(), &params)?;
+    // let (ct, u_rns, e0_rns, e1_rns) = pk.try_encrypt_extended(&pt, &mut rng)?;
 
     // Extract context
-    let ctx = params.ctx_at_level(pt.level())?.clone();
+    // let ctx = params.ctx_at_level(pt.level())?.clone();
 
     // Initialize zk proving modulus
     let p = BigInt::from_str_radix("18446744069414584321", 10)?;
 
     // Compute input validation vectors
-    let res = InputValidationVectors::compute(&pt, &u_rns, &e0_rns, &e1_rns, &ct, &pk);
+    // let res = InputValidationVectors::compute(&pt, &u, &e0, &e1, &ct, &pk);
 
     // Create output json with standard form polynomials
     // let json_data = res.standard_form(&p).to_json();
 
     // Calculate bounds ---------------------------------------------------------------------
-    let bounds = InputValidationBounds::compute(&params, pt.level());
+    // let bounds = InputValidationBounds::compute(&params, pt.level());
 
     Ok(())
 }
@@ -932,52 +786,82 @@ fn write_json_to_file(output_path: &Path, filename: &str, json_data: &serde_json
         .expect("Unable to write data");
 }
 
-pub fn default_parameters_128(plaintext_nbits: usize, n_log2: usize) -> Arc<BfvParameters> {
-    debug_assert!(plaintext_nbits < 64);
+// pub fn default_parameters_128(plaintext_nbits: usize, n_log2: usize) -> Arc<BfvParameters> {
+//     debug_assert!(plaintext_nbits < 64);
 
-    let (n, moduli) = match n_log2 {
-        10 => (1024, vec![0x7fff801]),
-        11 => (2048, vec![0xffffffffff001]),
-        12 => (4096, vec![0x3fffe4001, 0x3fffd0001, 0x7ffff6001]),
-        13 => (
-            8192,
-            vec![
-                0x1ffffff0001,
-                0x1fffffb0001,
-                0x1fffff24001,
-                0x1ffffed8001,
-                0x1ffffed0001,
-            ],
-        ),
-        14 => (
-            16384,
-            vec![
-                0x1ffffff18001,
-                0x1fffffee8001,
-                0x1fffffe58001,
-                0x3ffffff70001,
-                0x3ffffff58001,
-                0x3ffffff28001,
-                0x3fffffe50001,
-                0x3fffffe08001,
-                0x3fffffce8001,
-            ],
-        ),
-        _ => panic!("not supported"),
-    };
+//     let (n, moduli) = match n_log2 {
+//         10 => (1024, vec![0x7fff801]),
+//         11 => (2048, vec![0xffffffffff001]),
+//         12 => (4096, vec![0x3fffe4001, 0x3fffd0001, 0x7ffff6001]),
+//         13 => (
+//             8192,
+//             vec![
+//                 0x1ffffff0001,
+//                 0x1fffffb0001,
+//                 0x1fffff24001,
+//                 0x1ffffed8001,
+//                 0x1ffffed0001,
+//             ],
+//         ),
+//         14 => (
+//             16384,
+//             vec![
+//                 0x1ffffff18001,
+//                 0x1fffffee8001,
+//                 0x1fffffe58001,
+//                 0x3ffffff70001,
+//                 0x3ffffff58001,
+//                 0x3ffffff28001,
+//                 0x3fffffe50001,
+//                 0x3fffffe08001,
+//                 0x3fffffce8001,
+//             ],
+//         ),
+//         _ => panic!("not supported"),
+//     };
 
-    if let Some(plaintext_modulus) = generate_prime(
-        plaintext_nbits,
-        2 * n as u64,
-        u64::MAX >> (64 - plaintext_nbits),
-    ) {
-        return BfvParametersBuilder::new()
-            .set_degree(n as usize)
-            .set_plaintext_modulus(plaintext_modulus)
-            .set_moduli(&moduli)
-            .build_arc()
-            .unwrap();
-    }
+//     if let Some(plaintext_modulus) = generate_prime(
+//         plaintext_nbits,
+//         2 * n as u64,
+//         u64::MAX >> (64 - plaintext_nbits),
+//     ) {
+//         return BfvParametersBuilder::new()
+//             .set_degree(n as usize)
+//             .set_plaintext_modulus(plaintext_modulus)
+//             .set_moduli(&moduli)
+//             .build_arc()
+//             .unwrap();
+//     }
 
-    panic!()
+//     panic!()
+// }
+
+#[test]
+fn test_gen_witness() {
+    let mut rng = StdRng::seed_from_u64(0);
+
+    let mut params = BfvParameters::new_with_primes(
+        vec![1032193, 1073692673],
+        vec![995329, 1073668097],
+        40961,
+        1 << 11,
+    );
+    params.enable_hybrid_key_switching_with_prime(vec![61441]);
+    params.enable_pke();
+    
+    let N: u64 = params.degree as u64;
+
+
+    let sk = SecretKey::random_with_params(&params, &mut rng);
+    let pk = PublicKey::new(&params,&sk, &mut rng);
+
+    let m: Vec<_> = (0..(N as u64)).collect_vec(); // m here is from lowest degree to largest as input into fhe.rs (REQUIRED)
+    let pt = Plaintext::encode(&m, &params,  Encoding {
+        encoding_type: EncodingType::Poly,
+        poly_cache: PolyCache::None,
+        level: 0,
+    });
+    let (ct, u, e0, e1) = pk.encrypt(&params, &pt, &mut rng);
+
+    gen_witness(params, ct, u, e0, e1, pt, pk).unwrap();
 }
