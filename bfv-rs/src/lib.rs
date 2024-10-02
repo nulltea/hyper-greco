@@ -981,3 +981,29 @@ pub fn default_parameters_128(plaintext_nbits: usize, n_log2: usize) -> Arc<BfvP
 
     panic!()
 }
+
+#[cfg(test)]
+mod test {
+    use tracing::{info_span};
+    use tracing_forest::ForestLayer;
+    use tracing_subscriber::{layer::SubscriberExt, EnvFilter, Registry};
+
+    use crate::gen_witness;
+
+    #[test]
+    fn test_gen_witness() {
+        let env_filter = EnvFilter::builder()
+            .with_default_directive(tracing::Level::INFO.into())
+            .from_env_lossy();
+
+        let subscriber = Registry::default()
+            .with(env_filter)
+            .with(ForestLayer::default());
+
+        let _ = tracing::subscriber::set_global_default(subscriber);
+
+        for log2 in 10..15 {
+            info_span!("gen_witness for 2**{}", log2).in_scope(|| gen_witness(log2).unwrap());
+        }
+    }
+}
