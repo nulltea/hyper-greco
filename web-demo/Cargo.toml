@@ -1,0 +1,29 @@
+[package]
+name = "web-demo"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = "0.2.93"
+js-sys = "0.3.70"
+wasm-bindgen-futures = "0.4.43"
+web-sys = { version = "0.3.70", features = [
+    "console",
+] }
+wasm-bindgen-rayon = { version = "1.2.1" }
+console_error_panic_hook = { version = "0.1.7" }
+serde-wasm-bindgen = { version = "0.6.0" }
+
+bfv-gkr = { path = "../bfv-gkr" }
+bfv-rs = { path = "../bfv-rs" }
+
+rayon = { version = "1.8", features = ["web_spin_lock"] }
+getrandom = { version = "0.2", features = ["js"] }
+rand = "0.8"
+goldilocks.workspace = true
+
+paste = "1"
+

@@ -24,6 +24,7 @@ ark-std.workspace = true
 fixedbitset.workspace = true
 paste.workspace = true
 lasso-gkr = { path = "../lasso" }
+wasm-bindgen = "0.2.93"
 
 [dev-dependencies]
 paste.workspace = true

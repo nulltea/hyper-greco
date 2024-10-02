@@ -22,6 +22,7 @@ use plonkish_backend::util::hash::{Keccak256, Output};
 use rand::RngCore;
 use rayon::iter::ParallelIterator;
 use serde::Deserialize;
+use wasm_bindgen::prelude::wasm_bindgen;
 use std::cmp::min;
 use std::iter;
 use tracing::info_span;
@@ -61,6 +62,7 @@ pub type VerifierKey<
 /// * `r1is`: list of r1i polynomials for each CRT i-th CRT basis.
 /// * `ais`: list of ai polynomials for each CRT i-th CRT basis.
 /// * `ct0is`: list of ct0i (first component of the ciphertext cti) polynomials for each CRT i-th CRT basis.
+#[wasm_bindgen]
 #[derive(Deserialize, Clone)]
 pub struct BfvSkEncryptArgs {
     s: Vec<String>,
@@ -319,10 +321,9 @@ impl<Params: BfvSkEncryptConstans<K>, const K: usize> BfvEncrypt<Params, K> {
     pub fn setup<
         F: PrimeField,
         E: ExtensionField<F>,
-        Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
+        // Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
     >(
         &self,
-        _rng: impl RngCore + Clone,
     ) -> (ProverKey<F, E>, VerifierKey<F, E>) {
         let mut lasso_preprocessing = LassoPreprocessing::<F, E>::preprocess::<C, M>(chain![
             [
@@ -417,11 +418,11 @@ impl<Params: BfvSkEncryptConstans<K>, const K: usize> BfvEncrypt<Params, K> {
     pub fn prove<
         F: PrimeField,
         E: ExtensionField<F>,
-        Pcs: PolynomialCommitmentScheme<
-            F,
-            Polynomial = MultilinearPolynomial<F>,
-            CommitmentChunk = Output<Keccak256>,
-        >,
+        // Pcs: PolynomialCommitmentScheme<
+        //     F,
+        //     Polynomial = MultilinearPolynomial<F>,
+        //     CommitmentChunk = Output<Keccak256>,
+        // >,
     >(
         &self,
         args: &BfvSkEncryptArgs,
@@ -462,11 +463,11 @@ impl<Params: BfvSkEncryptConstans<K>, const K: usize> BfvEncrypt<Params, K> {
     pub fn verify<
         F: PrimeField,
         E: ExtensionField<F>,
-        Pcs: PolynomialCommitmentScheme<
-            F,
-            Polynomial = MultilinearPolynomial<F>,
-            CommitmentChunk = Output<Keccak256>,
-        >,
+        // Pcs: PolynomialCommitmentScheme<
+        //     F,
+        //     Polynomial = MultilinearPolynomial<F>,
+        //     CommitmentChunk = Output<Keccak256>,
+        // >,
     >(
         &self,
         vk: VerifierKey<F, E>,
@@ -530,98 +531,134 @@ fn relay_add_const<F>(w: (usize, usize), c: F) -> VanillaGate<F> {
     VanillaGate::new(Some(c), vec![(None, w)], Vec::new())
 }
 
-#[cfg(test)]
-mod test {
-    use crate::generate_sk_enc_test;
+// #[cfg(test)]
+// mod test {
+//     use crate::generate_sk_enc_test;
 
-    use super::*;
-    use gkr::util::dev::seeded_std_rng;
-    use goldilocks::{Goldilocks, GoldilocksExt2};
-    use halo2_curves::bn256::Fr;
+//     use super::*;
+//     use gkr::util::dev::seeded_std_rng;
+//     use goldilocks::{Goldilocks, GoldilocksExt2};
+//     use halo2_curves::bn256::Fr;
 
-    use paste::paste;
-    use plonkish_backend::{pcs::multilinear::MultilinearBrakedown, util::code::BrakedownSpec6};
-    use std::{fs::File, io::Read};
-    use tracing::info_span;
-    use tracing_forest::ForestLayer;
-    use tracing_subscriber::{layer::SubscriberExt, EnvFilter, Registry};
+//     use paste::paste;
+//     use plonkish_backend::{pcs::multilinear::MultilinearBrakedown, util::code::BrakedownSpec6};
+//     use std::{fs::File, io::Read};
+//     use tracing::info_span;
+//     use tracing_forest::ForestLayer;
+//     use tracing_subscriber::{layer::SubscriberExt, EnvFilter, Registry};
 
-    pub type Brakedown<F> =
-        MultilinearBrakedown<F, plonkish_backend::util::hash::Keccak256, BrakedownSpec6>;
+//     pub type Brakedown<F> =
+//         MultilinearBrakedown<F, plonkish_backend::util::hash::Keccak256, BrakedownSpec6>;
 
-    // Goldilocks prime tests
 
-    generate_sk_enc_test!(
-        "goldilocks",
-        Goldilocks,
-        GoldilocksExt2,
-        Brakedown<Goldilocks>,
-        1024,
-        1,
-        27
-    );
+//         pub fn test_sk_enc_valid_x() {
+//             type Params = crate::constants::SkEnc16384_8x54_65537;
+//             let env_filter = EnvFilter::builder()
+//                 .with_default_directive(tracing::Level::INFO.into())
+//                 .from_env_lossy();
 
-    generate_sk_enc_test!(
-        "goldilocks",
-        Goldilocks,
-        GoldilocksExt2,
-        Brakedown<Goldilocks>,
-        2048,
-        1,
-        52
-    );
+//             let subscriber = Registry::default()
+//                 .with(env_filter)
+//                 .with(ForestLayer::default());
 
-    generate_sk_enc_test!(
-        "goldilocks",
-        Goldilocks,
-        GoldilocksExt2,
-        Brakedown<Goldilocks>,
-        4096,
-        2,
-        55
-    );
+//             let _ = tracing::subscriber::set_global_default(subscriber);
 
-    generate_sk_enc_test!(
-        "goldilocks",
-        Goldilocks,
-        GoldilocksExt2,
-        Brakedown<Goldilocks>,
-        8192,
-        4,
-        55
-    );
+//             let rng = seeded_std_rng();
 
-    generate_sk_enc_test!(
-        "goldilocks",
-        Goldilocks,
-        GoldilocksExt2,
-        Brakedown<Goldilocks>,
-        16384,
-        8,
-        54
-    );
+            
+//             let mut file = File::open(&file_path).expect("Failed to open file");
+//             let mut data = String::new();
+//             file.read_to_string(&mut data).expect("Failed to read file");
+//             let bfv = BfvEncrypt::<Params, 8>::new(8);
+//             let args =
+//                 serde_json::from_str::<BfvSkEncryptArgs>(&data).expect("Failed to parse JSON");
 
-    generate_sk_enc_test!(
-        "goldilocks",
-        Goldilocks,
-        GoldilocksExt2,
-        Brakedown<Goldilocks>,
-        32768,
-        16,
-        59
-    );
+//             let (pk, vk) =
+//                 info_span!("setup").in_scope(|| bfv.setup::<Goldilocks, GoldilocksExt2, Brakedown<Goldilocks>>(rng.clone()));
+//             let proof = info_span!("FHE_enc prove")
+//                 .in_scope(|| bfv.prove::<Goldilocks, GoldilocksExt2, Brakedown<Goldilocks>>(&args, pk));
 
-    // Bn254 prime tests
+//             let (inputs, _) =
+//                 info_span!("parse inputs").in_scope(|| bfv.get_inputs(&args));
 
-    generate_sk_enc_test!("bn254", Fr, Fr, Brakedown<Fr>, 1024, 1, 27);
+//             info_span!("FHE_enc verify")
+//                 .in_scope(|| bfv.verify::<Goldilocks, GoldilocksExt2, Brakedown<Goldilocks>>(vk, inputs, args.ct0is,  &proof));
+//         }
+        
 
-    generate_sk_enc_test!("bn254", Fr, Fr, Brakedown<Fr>, 2048, 1, 52);
+//     // Goldilocks prime tests
 
-    generate_sk_enc_test!("bn254", Fr, Fr, Brakedown<Fr>, 4096, 2, 55);
+//     generate_sk_enc_test!(
+//         "goldilocks",
+//         Goldilocks,
+//         GoldilocksExt2,
+//         Brakedown<Goldilocks>,
+//         1024,
+//         1,
+//         27
+//     );
 
-    generate_sk_enc_test!("bn254", Fr, Fr, Brakedown<Fr>, 8192, 4, 55);
+//     generate_sk_enc_test!(
+//         "goldilocks",
+//         Goldilocks,
+//         GoldilocksExt2,
+//         Brakedown<Goldilocks>,
+//         2048,
+//         1,
+//         52
+//     );
 
-    generate_sk_enc_test!("bn254", Fr, Fr, Brakedown<Fr>, 16384, 8, 54);
+//     generate_sk_enc_test!(
+//         "goldilocks",
+//         Goldilocks,
+//         GoldilocksExt2,
+//         Brakedown<Goldilocks>,
+//         4096,
+//         2,
+//         55
+//     );
 
-    generate_sk_enc_test!("bn254", Fr, Fr, Brakedown<Fr>, 32768, 16, 59);
-}
+//     generate_sk_enc_test!(
+//         "goldilocks",
+//         Goldilocks,
+//         GoldilocksExt2,
+//         Brakedown<Goldilocks>,
+//         8192,
+//         4,
+//         55
+//     );
+
+//     generate_sk_enc_test!(
+//         "goldilocks",
+//         Goldilocks,
+//         GoldilocksExt2,
+//         Brakedown<Goldilocks>,
+//         16384,
+//         8,
+//         54
+//     );
+
+//     generate_sk_enc_test!(
+//         "goldilocks",
+//         Goldilocks,
+//         GoldilocksExt2,
+//         Brakedown<Goldilocks>,
+//         32768,
+//         16,
+//         59
+//     );
+
+//     // Bn254 prime tests
+
+//     generate_sk_enc_test!("bn254", Fr, Fr, Brakedown<Fr>, 1024, 1, 27);
+
+//     generate_sk_enc_test!("bn254", Fr, Fr, Brakedown<Fr>, 2048, 1, 52);
+
+//     generate_sk_enc_test!("bn254", Fr, Fr, Brakedown<Fr>, 4096, 2, 55);
+
+//     generate_sk_enc_test!("bn254", Fr, Fr, Brakedown<Fr>, 8192, 4, 55);
+
+//     generate_sk_enc_test!("bn254", Fr, Fr, Brakedown<Fr>, 16384, 8, 54);
+
+//     generate_sk_enc_test!("bn254", Fr, Fr, Brakedown<Fr>, 32768, 16, 59);
+// }

@@ -14,7 +14,7 @@ macro_rules! generate_sk_enc_test {
                     .with(env_filter)
                     .with(ForestLayer::default());
 
-                    let _ = tracing::subscriber::set_global_default(subscriber);
+                let _ = tracing::subscriber::set_global_default(subscriber);
 
                 let rng = seeded_std_rng();
 

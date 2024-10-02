@@ -21,3 +21,9 @@ Cargo.lock
 #.idea/
 
 **/data/bn254/sk_enc_32768_16x59_65537.json
+
+**/**/node_modules/
+
+*.wasm
+web-demo/pkg
+web-demo/dist
