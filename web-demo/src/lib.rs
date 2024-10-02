@@ -77,3 +77,8 @@ define_bfv_encrypt!(16384, 8, constants::SkEnc16384_8x54_65537);
 pub fn parse_args(val: JsValue) -> BfvSkEncryptArgs {
     serde_wasm_bindgen::from_value(val).unwrap()
 }
+
+#[wasm_bindgen(start)]
+fn setup () {
+    init_panic_hook();
+}
