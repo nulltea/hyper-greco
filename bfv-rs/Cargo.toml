@@ -1,0 +1,28 @@
+[package]
+name = "bfv-rs"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+fhe = { git = "https://github.com/gnosisguild/fhe.rs.git", branch = "feature/greco-integration" }
+fhe-traits = { git = "https://github.com/gnosisguild/fhe.rs.git", branch = "feature/greco-integration" }
+fhe-math = { git = "https://github.com/gnosisguild/fhe.rs.git", branch = "feature/greco-integration" }
+serde_json = "1.0"
+rand = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+num-bigint = "0.4.6"
+num-traits = "0.2"
+ndarray = "0.15.6"
+itertools = "0.13.0"
+rayon = "1.10.0"
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.17", features = ["std", "env-filter"] }
+tracing-forest = { version = "0.1.6", features = ["ansi", "smallvec"] }
+concrete-ntt = { git = "https://github.com/zama-ai/concrete-ntt", features = [
+    "nightly",
+] }
+
+[features]
+sanity-check = []
