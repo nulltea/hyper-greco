@@ -28,11 +28,5 @@ concrete-ntt = { git = "https://github.com/zama-ai/concrete-ntt", features = [
     "nightly",
 ] }
 
-bfv = { git = "https://github.com/Janmajayamall/bfv.git", features = [
-    "serialize",
-    "std",
-], branch = "wasm" }
-traits = { git = "https://github.com/Janmajayamall/bfv.git", branch = "wasm" }
-
 [features]
 sanity-check = []
