@@ -73,18 +73,18 @@ async function bfvProve() {
 
 }
 
-async function main() {
-    await init();
-    await initThreadPool(navigator.hardwareConcurrency);
-    await init_panic_hook();
-
-    return Comlink.proxy({
-        parallelSum,
-        witnessPreprocess,
-        bfvProve,
-    });
-}
-
-Comlink.expose({
-    demos: main(),
-});
+// async function main() {
+//     await init();
+//     await initThreadPool(navigator.hardwareConcurrency);
+//     await init_panic_hook();
+//
+//     return Comlink.proxy({
+//         parallelSum,
+//         witnessPreprocess,
+//         bfvProve,
+//     });
+// }
+//
+// Comlink.expose({
+//     demos: main(),
+// });

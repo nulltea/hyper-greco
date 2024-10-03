@@ -31,9 +31,6 @@ use serde::Deserialize;
 use std::cmp::min;
 use std::iter;
 use tracing::info_span;
-use tracing_forest::ForestLayer;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::{EnvFilter, Registry};
 use wasm_bindgen::prelude::wasm_bindgen;
 
 const LIMB_BITS: usize = 16;
@@ -740,7 +737,7 @@ mod test {
             1 << 11,
         );
         let N: u64 = params.degree as u64;
-        let bounds = bfv_rs::setup_witness(&params).unwrap();
+        let bounds = bfv_rs::witness_bounds(&params).unwrap();
         let bfv = BfvEncrypt::new(params.clone(), bounds, 1);
 
         let args = {
@@ -757,11 +754,9 @@ mod test {
                 },
             );
 
-            let (ct, e) = sk.encrypt(&params, &pt, &mut rng);
-
             let p = BigInt::from_str_radix("18446744069414584321", 10).unwrap();
 
-            bfv_rs::gen_witness(params, ct, e, pt, sk, &p).unwrap()
+            bfv_rs::encrypt_with_witness(params, pt, sk, &mut rng, &p).unwrap().1
         };
 
         bfv.gen_values::<Goldilocks, GoldilocksExt2>(&args);

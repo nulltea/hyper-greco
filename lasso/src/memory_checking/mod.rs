@@ -42,7 +42,7 @@ pub struct Chunk<'a, F: PrimeField, E: ExtensionField<F>> {
 }
 
 impl<'a, F: PrimeField, E: ExtensionField<F>> Chunk<'a, F, E> {
-    pub(in crate) fn new(
+    pub(crate) fn new(
         chunk_index: usize,
         dim: &'a BoxMultilinearPoly<'a, F, E>,
         read_ts_poly: &'a BoxMultilinearPoly<'a, F, E>,

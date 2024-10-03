@@ -432,12 +432,10 @@ impl InputValidationVectors {
     }
 }
 
-pub fn setup_witness(
+pub fn witness_bounds(
     params: &BfvParameters,
 ) -> Result<InputValidationBounds, Box<dyn std::error::Error>> {
-    let res = InputValidationBounds::compute(params, 0)?;
-    let level = params.ciphertext_moduli.len() - res.r2.len();
-    Ok(res)
+    InputValidationBounds::compute(params, 0)
 }
 
 pub fn gen_witness(
@@ -457,13 +455,29 @@ pub fn gen_witness(
     Ok(reduced_p)
 }
 
+pub fn encrypt_with_witness(
+    params: BfvParameters,
+    pt: Plaintext,
+    sk: SecretKey,
+    rng: &mut StdRng,
+    p: &BigInt,
+) -> Result<(Ciphertext, InputValidationVectors), Box<dyn std::error::Error>> {
+    let (ct, e) = sk.encrypt(&params, &pt, rng);
+    
+    let res = InputValidationVectors::compute(&params, &pt, &e, &ct, &sk)?;
+
+    let wit = res.standard_form(p);
+
+    Ok((ct, wit))
+}
+
 #[test]
 fn test_gen_witness() {
     let mut rng = StdRng::seed_from_u64(0);
 
     let params = BfvParameters::new_with_primes(vec![1032193], vec![995329], 40961, 1 << 11);
 
-    setup_witness(&params).unwrap();
+    witness_bounds(&params).unwrap();
 
     let N: u64 = params.degree as u64;
 

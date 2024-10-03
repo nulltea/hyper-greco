@@ -1,10 +1,11 @@
 use bfv_gkr::constants;
+use bfv_gkr::sk_encryption_circuit::BfvEncrypt;
 use goldilocks::Goldilocks;
 use goldilocks::GoldilocksExt2;
 use rand::thread_rng;
 use rayon::prelude::*;
+use tracing::info_span;
 use wasm_bindgen::prelude::*;
-use bfv_gkr::sk_encryption_circuit::BfvEncrypt;
 
 // We need to use the init_thread_pool for it to be publicly visible but it appears unused when
 // compiling
@@ -17,63 +18,76 @@ pub fn init_panic_hook() {
 }
 
 #[wasm_bindgen]
-pub fn parallel_sum(data: &[f64]) -> f64 {
-    // Sum the data in parallel
-    data.par_iter().sum()
-}
-
-#[wasm_bindgen]
-pub fn witness_preprocess(n_log2: usize) {
-    bfv_rs::gen_witness(n_log2);
-}
-
-pub use bfv_gkr::sk_encryption_circuit::BfvSkEncryptArgs;
-
-#[wasm_bindgen]
 pub struct ProverKey(bfv_gkr::sk_encryption_circuit::ProverKey<Goldilocks, GoldilocksExt2>);
 
 use paste::paste;
+use tracing::Level;
 
-macro_rules! define_bfv_encrypt {
-    ($n:expr, $k:expr, $const_type:ty) => {
-        paste! {
-            #[wasm_bindgen]
-            pub struct [<BfvEncrypt $n>](BfvEncrypt<$const_type, $k>);
+#[wasm_bindgen]
+pub fn porve_encrypt() {
+    let params = BfvParameters::new_with_primes(
+        vec![1032193, 1073692673],
+        vec![995329, 1073668097],
+        40961,
+        1 << 11,
+    );
+    let bounds = bfv_rs::witness_bounds(&params).unwrap();
+    let bfv = BfvEncrypt::new(params.clone(), bounds, 1);
 
-            #[wasm_bindgen]
-            impl [<BfvEncrypt $n>] {
-                #[wasm_bindgen]
-                pub fn new() -> [<BfvEncrypt $n>] {
-                    Self(BfvEncrypt::<$const_type, $k>::new($k))
-                }
+    let args = {
+        let sk = SecretKey::random_with_params(&params, &mut rng);
 
-                #[wasm_bindgen]
-                pub fn setup(&self) -> ProverKey {
-                    ProverKey(self.0.setup::<Goldilocks, GoldilocksExt2>().0)
-                }
+        let m: Vec<_> = (0..(params.degree as u64)).collect_vec(); // m here is from lowest degree to largest as input into fhe.rs (REQUIRED)
+        let pt = Plaintext::encode(
+            &m,
+            &params,
+            Encoding {
+                encoding_type: EncodingType::Poly,
+                poly_cache: PolyCache::None,
+                level: 0,
+            },
+        );
 
-                #[wasm_bindgen]
-                pub fn prove(
-                    &self,
-                    args: &BfvSkEncryptArgs,
-                    pk: ProverKey,
-                ) -> Vec<u8> {
-                    self.0.prove::<Goldilocks, GoldilocksExt2>(args, pk.0)
-                }
-            }
-        }
+        let p = BigInt::from_str_radix("18446744069414584321", 10).unwrap();
+        bfv_rs::encrypt_with_witness(params, pt, sk, &mut rng, &p)
+            .unwrap()
+            .1
     };
+
+    let (pk, vk) = info_span!("setup").in_scope(|| bfv.setup::<Goldilocks, GoldilocksExt2>());
+    let proof =
+        info_span!("FHE_enc prove").in_scope(|| bfv.prove::<Goldilocks, GoldilocksExt2>(&args, pk));
+
+    let (inputs, _) = info_span!("parse inputs").in_scope(|| bfv.get_inputs(&args));
+
+    info_span!("FHE_enc verify")
+        .in_scope(|| bfv.verify::<Goldilocks, GoldilocksExt2>(vk, inputs, args.ct0is, &proof));
 }
-
-
-define_bfv_encrypt!(1024, 1, constants::SkEnc1024_1x27_65537);
-define_bfv_encrypt!(2048, 1, constants::SkEnc2048_1x52_65537);
-define_bfv_encrypt!(4096, 2, constants::SkEnc4096_2x55_65537);
-define_bfv_encrypt!(8192, 4, constants::SkEnc8192_4x55_65537);
-define_bfv_encrypt!(16384, 8, constants::SkEnc16384_8x54_65537);
-
 
 #[wasm_bindgen]
 pub fn parse_args(val: JsValue) -> BfvSkEncryptArgs {
     serde_wasm_bindgen::from_value(val).unwrap()
+}
+
+use tracing::level_filters::LevelFilter;
+use tracing_forest::tag::NoTag;
+use tracing_forest::{ForestLayer, PrettyPrinter, Printer};
+use tracing_subscriber::fmt::format::{FmtSpan, Pretty};
+use tracing_subscriber::prelude::*;
+use tracing_subscriber::EnvFilter;
+
+#[wasm_bindgen(start)]
+fn setup() {
+    init_panic_hook();
+
+    // For WASM, we must set the directives here at compile time.
+    let filter_layer = EnvFilter::default().add_directive(LevelFilter::DEBUG.into());
+
+    let printer = Printer::new().writer(tracing_web::MakeWebConsoleWriter::new());
+    let forest_layer = ForestLayer::new(printer, NoTag);
+    tracing_subscriber::registry()
+        .with(filter_layer)
+        .with(forest_layer)
+        .init();
+    tracing::info!("init!");
 }

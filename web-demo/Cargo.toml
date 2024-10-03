@@ -3,6 +3,14 @@ name = "web-demo"
 version = "0.1.0"
 edition = "2021"
 
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-O4", "-O4"]
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 
@@ -26,4 +34,11 @@ rand = "0.8"
 goldilocks.workspace = true
 
 paste = "1"
+tracing-subscriber = { version = "0.3.18" , features = ["time"] }
+tracing = { version = "0.1.40", default-features = false }
 
+tracing-web = "0.1.3"
+time = { version = "0.3", features = ["wasm-bindgen"] }
+tracing-forest = { git = "https://github.com/ec2/tracing-forest.git", rev = "1708343aa02500fa4e3f4d9a3eb5353559269a7b", features = ["smallvec"] }
+chrono = { version = "0.4.38", default-features = false, features = ["wasmbind"] }
+web-time = "1.1.0"
