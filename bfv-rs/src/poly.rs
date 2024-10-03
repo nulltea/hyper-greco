@@ -3,8 +3,8 @@
 use itertools::Itertools;
 use num_bigint::BigInt;
 use num_traits::*;
-use rayon::iter::IntoParallelRefIterator;
-use rayon::iter::ParallelIterator;
+// use rayon::iter::IntoParallelRefIterator;
+// use rayon::iter::ParallelIterator;
 use tracing::info_span;
 
 // NTT related
@@ -279,7 +279,7 @@ pub fn poly_modulo_cyclo(dividend: &[BigInt], n: usize) -> Vec<BigInt> {
 /// A vector of `BigInt` representing the polynomial with each coefficient multiplied by the scalar, maintaining
 /// the same order of coefficients as the input polynomial.
 pub fn poly_scalar_mul(poly: &[BigInt], scalar: &BigInt) -> Vec<BigInt> {
-    poly.par_iter().map(|coeff| coeff * scalar).collect()
+    poly.iter().map(|coeff| coeff * scalar).collect()
 }
 
 /// Reduces the coefficients of a polynomial by dividing it with a cyclotomic polynomial
@@ -374,7 +374,7 @@ pub fn reduce_and_center_coefficients(
 ) -> Vec<BigInt> {
     let half_modulus = modulus / BigInt::from(2);
     coefficients
-        .par_iter()
+        .iter()
         .map(|x| reduce_and_center(x, modulus, &half_modulus))
         .collect()
 }

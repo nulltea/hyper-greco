@@ -1,10 +1,10 @@
 use bfv_gkr::constants;
+use bfv_gkr::sk_encryption_circuit::BfvEncrypt;
 use goldilocks::Goldilocks;
 use goldilocks::GoldilocksExt2;
 use rand::thread_rng;
 use rayon::prelude::*;
 use wasm_bindgen::prelude::*;
-use bfv_gkr::sk_encryption_circuit::BfvEncrypt;
 
 // We need to use the init_thread_pool for it to be publicly visible but it appears unused when
 // compiling
@@ -19,12 +19,20 @@ pub fn init_panic_hook() {
 #[wasm_bindgen]
 pub fn parallel_sum(data: &[f64]) -> f64 {
     // Sum the data in parallel
-    data.par_iter().sum()
+    tracing::info_span!("parallel_sum").in_scope(|| {
+        data.par_iter().sum()
+    })
 }
 
 #[wasm_bindgen]
 pub fn witness_preprocess(n_log2: usize) {
-    bfv_rs::gen_witness(n_log2);
+    tracing::info_span!("Witness preprocessing n = {}", n_log2).in_scope(|| {
+        tracing::info!(
+                    "Current num threads {}",
+                    rayon::current_num_threads()
+                );
+        bfv_rs::gen_witness(n_log2);
+    });
 }
 
 pub use bfv_gkr::sk_encryption_circuit::BfvSkEncryptArgs;
@@ -33,6 +41,7 @@ pub use bfv_gkr::sk_encryption_circuit::BfvSkEncryptArgs;
 pub struct ProverKey(bfv_gkr::sk_encryption_circuit::ProverKey<Goldilocks, GoldilocksExt2>);
 
 use paste::paste;
+use tracing::Level;
 
 macro_rules! define_bfv_encrypt {
     ($n:expr, $k:expr, $const_type:ty) => {
@@ -65,20 +74,38 @@ macro_rules! define_bfv_encrypt {
     };
 }
 
-
 define_bfv_encrypt!(1024, 1, constants::SkEnc1024_1x27_65537);
 define_bfv_encrypt!(2048, 1, constants::SkEnc2048_1x52_65537);
 define_bfv_encrypt!(4096, 2, constants::SkEnc4096_2x55_65537);
 define_bfv_encrypt!(8192, 4, constants::SkEnc8192_4x55_65537);
 define_bfv_encrypt!(16384, 8, constants::SkEnc16384_8x54_65537);
 
-
 #[wasm_bindgen]
 pub fn parse_args(val: JsValue) -> BfvSkEncryptArgs {
     serde_wasm_bindgen::from_value(val).unwrap()
 }
 
+use tracing::level_filters::LevelFilter;
+use tracing_forest::{ForestLayer, PrettyPrinter, Printer};
+use tracing_forest::tag::NoTag;
+use tracing_subscriber::prelude::*;
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::fmt::format::{FmtSpan, Pretty};
+
 #[wasm_bindgen(start)]
-fn setup () {
+fn setup() {
     init_panic_hook();
+
+
+    // For WASM, we must set the directives here at compile time.
+    let filter_layer = EnvFilter::default()
+        .add_directive(LevelFilter::DEBUG.into());
+
+    let printer = Printer::new().writer(tracing_web::MakeWebConsoleWriter::new());
+    let forest_layer = ForestLayer::new(printer, NoTag);
+    tracing_subscriber::registry()
+        .with(filter_layer)
+        .with(forest_layer)
+        .init();
+    tracing::info!("init!");
 }

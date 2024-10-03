@@ -28,7 +28,7 @@ async function setup() {
     return;
   }
   await init();
-  await initThreadPool(navigator.hardwareConcurrency)
+  await initThreadPool(2)
 
 
 
@@ -83,7 +83,9 @@ async function setup() {
 
 }
 
-setup();
+setup().then(() => {
+  console.log("Setup done")
+});
 
 
 async function parallelSum() {
@@ -103,7 +105,8 @@ async function parallelSum() {
 
 async function witnessPreprocess() {
   const test_data = [
-    10, 11, 12, 13, 14
+      14
+    // 10, 11, 12, 13, 14
   ];
 
   for (const i of test_data) {

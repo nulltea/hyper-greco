@@ -14,7 +14,8 @@ use num_bigint::BigInt;
 use num_traits::{FromPrimitive, Num, Signed, ToPrimitive, Zero};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
-use rayon::iter::{ParallelBridge, ParallelIterator};
+use rayon::prelude::*;
+use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelBridge, ParallelIterator};
 use serde_json::json;
 use std::io::Write;
 use std::ops::Deref;
@@ -22,6 +23,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::vec;
 use std::{collections::HashMap, fs::File};
+use ndarray::{par_azip, Array, Ix1, Ix2, Zip};
 use tracing::info_span;
 use tracing_forest::ForestLayer;
 use tracing_subscriber::{layer::SubscriberExt, EnvFilter, Registry};
@@ -31,19 +33,19 @@ use poly::*;
 /// Set of vectors for input validation of a ciphertext
 #[derive(Clone, Debug)]
 pub struct InputValidationVectors {
-    pk0is: Vec<Vec<BigInt>>,
-    pk1is: Vec<Vec<BigInt>>,
-    ct0is: Vec<Vec<BigInt>>,
-    ct1is: Vec<Vec<BigInt>>,
-    r1is: Vec<Vec<BigInt>>,
-    r2is: Vec<Vec<BigInt>>,
-    p1is: Vec<Vec<BigInt>>,
-    p2is: Vec<Vec<BigInt>>,
-    k0is: Vec<BigInt>,
-    u: Vec<BigInt>,
-    e0: Vec<BigInt>,
-    e1: Vec<BigInt>,
-    k1: Vec<BigInt>,
+    pub pk0is: Vec<Vec<BigInt>>,
+    pub pk1is: Vec<Vec<BigInt>>,
+    pub   ct0is: Vec<Vec<BigInt>>,
+    pub    ct1is: Vec<Vec<BigInt>>,
+    pub   r1is: Vec<Vec<BigInt>>,
+    pub   r2is: Vec<Vec<BigInt>>,
+    pub  p1is: Vec<Vec<BigInt>>,
+    pub  p2is: Vec<Vec<BigInt>>,
+    pub   k0is: Vec<BigInt>,
+    pub  u: Vec<BigInt>,
+    pub   e0: Vec<BigInt>,
+    pub  e1: Vec<BigInt>,
+    pub   k1: Vec<BigInt>,
 }
 
 impl InputValidationVectors {
@@ -185,6 +187,7 @@ impl InputValidationVectors {
         ct: &Ciphertext,
         pk: &PublicKey,
     ) -> Result<InputValidationVectors, Box<dyn std::error::Error>> {
+        tracing::info!("Enter Compute! ");
         // Get context, plaintext modulus, and degree
         let params = &pk.par;
         let ctx = params.ctx_at_level(pt.level())?;
@@ -278,43 +281,34 @@ impl InputValidationVectors {
         #[cfg(feature = "sanity-check")]
         let plan_cyclo = PlanNtt::try_new(N as usize * 4).unwrap();
 
-        // Perform the main computation logic
-        #[allow(clippy::type_complexity)]
-        let results: Vec<(
-            usize,
-            Vec<BigInt>,
-            Vec<BigInt>,
-            BigInt,
-            Vec<BigInt>,
-            Vec<BigInt>,
-            Vec<BigInt>,
-            Vec<BigInt>,
-            Vec<BigInt>,
-            Vec<BigInt>,
-        )> = izip!(
-            ctx.moduli_operators(),
-            ct0.coefficients().rows(),
-            ct1.coefficients().rows(),
-            pk0.coefficients().rows(),
-            pk1.coefficients().rows()
-        )
-        .enumerate()
-        // .take(1)
-        .par_bridge()
-        .map(
-            |(i, (qi, ct0_coeffs, ct1_coeffs, pk0_coeffs, pk1_coeffs))| {
-                // --------------------------------------------------- ct0i ---------------------------------------------------
-                info_span!("results", i).in_scope(|| {
-                    // Convert to vectors of bigint, center, and reverse order.
-                    let mut ct0i: Vec<BigInt> =
-                        ct0_coeffs.iter().rev().map(|&x| BigInt::from(x)).collect();
-                    let mut ct1i: Vec<BigInt> =
-                        ct1_coeffs.iter().rev().map(|&x| BigInt::from(x)).collect();
-                    let mut pk0i: Vec<BigInt> =
-                        pk0_coeffs.iter().rev().map(|&x| BigInt::from(x)).collect();
-                    let mut pk1i: Vec<BigInt> =
-                        pk1_coeffs.iter().rev().map(|&x| BigInt::from(x)).collect();
 
+        tracing::info!("Start big ok parallel loop");
+
+        let zipped = (
+            ctx.moduli_operators(),
+            ct0.coefficients().rows().into_iter().map(|x| x.into_iter().rev().map(|&x| BigInt::from(x)).collect::<Vec<_>>()).collect::<Vec<_>>(),
+            ct1.coefficients().rows().into_iter().map(|x| x.into_iter().rev().map(|&x| BigInt::from(x)).collect::<Vec<_>>()).collect::<Vec<_>>(),
+            pk0.coefficients().rows().into_iter().map(|x| x.into_iter().rev().map(|&x| BigInt::from(x)).collect::<Vec<_>>()).collect::<Vec<_>>(),
+            pk1.coefficients().rows().into_iter().map(|x| x.into_iter().rev().map(|&x| BigInt::from(x)).collect::<Vec<_>>()).collect::<Vec<_>>()
+        );
+        tracing::info!("Iterator len: {}", ctx.moduli().len());
+           let results: (
+                   Vec<Vec<BigInt>>,
+                   Vec<Vec<BigInt>>,
+                   Vec<BigInt>,
+                   Vec<Vec<BigInt>>,
+                   Vec<Vec<BigInt>>,
+                   Vec<Vec<BigInt>>,
+                   Vec<Vec<BigInt>>,
+                   Vec<Vec<BigInt>>,
+                   Vec<Vec<BigInt>>,
+               ) =
+               zipped.into_par_iter().map(
+
+                |(qi, mut ct0i, mut ct1i,mut  pk0i, mut pk1i)| {
+                    // --------------------------------------------------- ct0i ---------------------------------------------------
+                    info_span!("results").in_scope(|| {
+                    tracing::info!("Thread: {:?}", rayon::current_thread_index());
                     let qi_bigint = BigInt::from(qi.modulus());
 
                     reduce_and_center_coefficients_mut(&mut ct0i, &qi_bigint);
@@ -500,34 +494,54 @@ impl InputValidationVectors {
 
                         assert_eq!(&ct1i, &ct1i_calculated);
                     }
-
-                    (i, r2i, r1i, k0qi, ct0i, ct1i, pk0i, pk1i, p1i, p2i)
+                    tracing::info!(" r2i: {}, r1i: {},  ct0i: {}, ct1i: {}, pk0i: {}, pk1i: {}, p1i: {}, p2i: {}",
+                        r2i.len(),
+                        r1i.len(),
+                        ct0i.len(),
+                        ct1i.len(),
+                        pk0i.len(),
+                        pk1i.len(),
+                        p1i.len(),
+                        p2i.len(),
+                    );
+                    (vec![r2i], vec![r1i], vec![k0qi], vec![ct0i], vec![ct1i], vec![pk0i], vec![pk1i], vec![p1i], vec![p2i])
+                    //     (r2i, r1i, k0qi,p1i, p2i)
                 })
             },
-        )
-        .collect();
+
+        // ).reduce(
+           ).reduce(|| (vec![], vec![], vec![], vec![], vec![], vec![], vec![], vec![], vec![]),
+            |mut acc, mut b| {
+                acc.0.append(&mut b.0);
+                acc.1.append(&mut b.1);
+                acc.2.append(&mut b.2);
+                acc.3.append(&mut b.3);
+                acc.4.append(&mut b.4);
+                acc.5.append(&mut b.5);
+                acc.6.append(&mut b.6);
+                acc.7.append(&mut b.7);
+                acc.8.append(&mut b.8);
+                acc
+            });
+            res.r2is = results.0;
+            res.r1is = results.1;
+            res.k0is = results.2;
+            res.ct0is = results.3;
+            res.ct1is = results.4;
+            res.pk0is = results.5;
+            res.pk1is = results.6;
+            res.p1is = results.7;
+            res.p2is = results.8;
+
 
         // println!("Completed creation of polynomials!");
-
-        // Merge results into the `res` structure after parallel execution
-        for (i, r2i, r1i, k0i, ct0i, ct1i, pk0i, pk1i, p1i, p2i) in results.into_iter() {
-            res.r2is[i] = r2i;
-            res.r1is[i] = r1i;
-            res.k0is[i] = k0i;
-            res.ct0is[i] = ct0i;
-            res.ct1is[i] = ct1i;
-            res.pk0is[i] = pk0i;
-            res.pk1is[i] = pk1i;
-            res.p1is[i] = p1i;
-            res.p2is[i] = p2i;
-        }
 
         // Set final result vectors
         res.u = u;
         res.e0 = e0;
         res.e1 = e1;
         res.k1 = k1;
-
+        tracing::info!("exit compute");
         Ok(res)
     }
 }
@@ -872,7 +886,8 @@ impl InputValidationBounds {
 pub fn gen_witness(n_log2: usize) -> Result<(), Box<dyn std::error::Error>> {
     // TODO: add method `default_parameter_128(plaintext_nbits: usize, log2_n: usize) -> BfvParameters` in fhe-rs fork
     // TODO: and cache?
-    let params = default_parameters_128(20, n_log2);
+    let params = info_span!("BfvParameters::default_parameters_128")
+        .in_scope(|| default_parameters_128(20, n_log2));
     let N: u64 = params.degree() as u64;
 
     // Use a seedable rng for experimental reproducibility
@@ -886,8 +901,8 @@ pub fn gen_witness(n_log2: usize) -> Result<(), Box<dyn std::error::Error>> {
     // let m = t.random_vec(N as usize, &mut rng);
     let m: Vec<i64> = (-(N as i64 / 2)..(N as i64 / 2)).collect(); // m here is from lowest degree to largest as input into fhe.rs (REQUIRED)
     let pt = Plaintext::try_encode(&m, Encoding::poly(), &params)?;
-    let (ct, u_rns, e0_rns, e1_rns) = pk.try_encrypt_extended(&pt, &mut rng)?;
-
+    let (ct, u_rns, e0_rns, e1_rns) =
+        info_span!("encrypt").in_scope(|| pk.try_encrypt_extended(&pt, &mut rng))?;
     // Extract context
     let ctx = params.ctx_at_level(pt.level())?.clone();
 
@@ -895,14 +910,17 @@ pub fn gen_witness(n_log2: usize) -> Result<(), Box<dyn std::error::Error>> {
     let p = BigInt::from_str_radix("18446744069414584321", 10)?;
 
     // Compute input validation vectors
-    let res = InputValidationVectors::compute(&pt, &u_rns, &e0_rns, &e1_rns, &ct, &pk);
+    let ptc = pt.clone();
+    rayon::scope( |s| {
+        let res = info_span!("InputValidationVectors::compute").in_scope(|| {InputValidationVectors::compute(&ptc, &u_rns, &e0_rns, &e1_rns, &ct, &pk)});
+    });
 
     // Create output json with standard form polynomials
     // let json_data = res.standard_form(&p).to_json();
 
     // Calculate bounds ---------------------------------------------------------------------
-    let bounds = InputValidationBounds::compute(&params, pt.level());
-
+    let bounds = info_span!("InputValidationBounds::compute")
+        .in_scope(|| InputValidationBounds::compute(&params, pt.level()))?;
     Ok(())
 }
 
