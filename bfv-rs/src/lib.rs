@@ -462,11 +462,12 @@ pub fn encrypt_with_witness(
     rng: &mut StdRng,
     p: &BigInt,
 ) -> Result<(Ciphertext, InputValidationVectors), Box<dyn std::error::Error>> {
-    let (ct, e) = sk.encrypt(&params, &pt, rng);
-    
-    let res = InputValidationVectors::compute(&params, &pt, &e, &ct, &sk)?;
+    let (ct, e) = info_span!("bfv::encrypt_sk").in_scope(|| sk.encrypt(&params, &pt, rng));
 
-    let wit = res.standard_form(p);
+    let res = info_span!("witness preprocess")
+        .in_scope(|| InputValidationVectors::compute(&params, &pt, &e, &ct, &sk))?;
+
+    let wit = info_span!("reduce mod p").in_scope(|| res.standard_form(p));
 
     Ok((ct, wit))
 }

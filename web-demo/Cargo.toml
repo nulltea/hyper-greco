@@ -24,7 +24,9 @@ web-sys = { version = "0.3.70", features = [
 wasm-bindgen-rayon = { version = "1.2.1" }
 console_error_panic_hook = { version = "0.1.7" }
 serde-wasm-bindgen = { version = "0.6.0" }
-
+bfv.workspace = true
+num-bigint.workspace = true
+num-traits.workspace = true
 bfv-gkr = { path = "../bfv-gkr" }
 bfv-rs = { path = "../bfv-rs" }
 

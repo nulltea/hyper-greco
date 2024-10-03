@@ -1,9 +1,7 @@
-use crate::constants::BfvSkEncryptConstans;
 use crate::{poly::Poly, transcript::Keccak256Transcript};
 use bfv::BfvParameters;
 use gkr::izip_eq;
 use gkr::util::arithmetic::radix2_fft;
-use gkr::util::dev::seeded_std_rng;
 use gkr::{
     chain_par,
     circuit::{
@@ -21,17 +19,11 @@ use itertools::{chain, izip};
 use lasso_gkr::{table::range::RangeLookup, LassoNode, LassoPreprocessing};
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
-use plonkish_backend::pcs::PolynomialCommitmentScheme;
-use plonkish_backend::poly::multilinear::MultilinearPolynomial;
 use plonkish_backend::util::arithmetic::root_of_unity;
-use plonkish_backend::util::hash::{Keccak256, Output};
-use rand::RngCore;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use serde::Deserialize;
 use std::cmp::min;
 use std::iter;
 use tracing::info_span;
-use wasm_bindgen::prelude::wasm_bindgen;
 
 const LIMB_BITS: usize = 16;
 const C: usize = 4;
@@ -707,7 +699,7 @@ mod test {
     use goldilocks::{Goldilocks, GoldilocksExt2};
     // use halo2_curves::bn256::Fr;
 
-    use num_traits::Num;
+    use num_traits::{FromPrimitive, Num};
     use paste::paste;
     use plonkish_backend::{pcs::multilinear::MultilinearBrakedown, util::code::BrakedownSpec6};
     use rand::{rngs::StdRng, SeedableRng};
@@ -744,19 +736,13 @@ mod test {
             let sk = SecretKey::random_with_params(&params, &mut rng);
 
             let m: Vec<_> = (0..(N as u64)).collect_vec(); // m here is from lowest degree to largest as input into fhe.rs (REQUIRED)
-            let pt = Plaintext::encode(
-                &m,
-                &params,
-                Encoding {
-                    encoding_type: EncodingType::Poly,
-                    poly_cache: PolyCache::None,
-                    level: 0,
-                },
-            );
+            let pt = Plaintext::encode(&m, &params, Encoding::default());
 
-            let p = BigInt::from_str_radix("18446744069414584321", 10).unwrap();
+            let p = BigInt::from_u64(18446744069414584321).unwrap();
 
-            bfv_rs::encrypt_with_witness(params, pt, sk, &mut rng, &p).unwrap().1
+            bfv_rs::encrypt_with_witness(params, pt, sk, &mut rng, &p)
+                .unwrap()
+                .1
         };
 
         bfv.gen_values::<Goldilocks, GoldilocksExt2>(&args);

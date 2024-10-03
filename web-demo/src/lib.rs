@@ -1,8 +1,16 @@
-use bfv_gkr::constants;
+use bfv::BfvParameters;
+use bfv::Encoding;
+use bfv::Plaintext;
+use bfv::SecretKey;
 use bfv_gkr::sk_encryption_circuit::BfvEncrypt;
 use goldilocks::Goldilocks;
 use goldilocks::GoldilocksExt2;
+use num_bigint::BigInt;
+use num_traits::FromPrimitive;
+use num_traits::Num;
+use rand::rngs::StdRng;
 use rand::thread_rng;
+use rand::SeedableRng;
 use rayon::prelude::*;
 use tracing::info_span;
 use wasm_bindgen::prelude::*;
@@ -24,7 +32,9 @@ use paste::paste;
 use tracing::Level;
 
 #[wasm_bindgen]
-pub fn porve_encrypt() {
+pub fn prove_encrypt_test() {
+    let mut rng = StdRng::seed_from_u64(0);
+
     let params = BfvParameters::new_with_primes(
         vec![1032193, 1073692673],
         vec![995329, 1073668097],
@@ -34,25 +44,17 @@ pub fn porve_encrypt() {
     let bounds = bfv_rs::witness_bounds(&params).unwrap();
     let bfv = BfvEncrypt::new(params.clone(), bounds, 1);
 
-    let args = {
+    let args = info_span!("witness_gen").in_scope(|| {
         let sk = SecretKey::random_with_params(&params, &mut rng);
 
-        let m: Vec<_> = (0..(params.degree as u64)).collect_vec(); // m here is from lowest degree to largest as input into fhe.rs (REQUIRED)
-        let pt = Plaintext::encode(
-            &m,
-            &params,
-            Encoding {
-                encoding_type: EncodingType::Poly,
-                poly_cache: PolyCache::None,
-                level: 0,
-            },
-        );
+        let m: Vec<_> = (0..(params.degree as u64)).collect::<Vec<_>>(); // m here is from lowest degree to largest as input into fhe.rs (REQUIRED)
+        let pt = Plaintext::encode(&m, &params, Encoding::default());
 
-        let p = BigInt::from_str_radix("18446744069414584321", 10).unwrap();
+        let p = BigInt::from_u64(18446744069414584321).unwrap();
         bfv_rs::encrypt_with_witness(params, pt, sk, &mut rng, &p)
             .unwrap()
             .1
-    };
+    });
 
     let (pk, vk) = info_span!("setup").in_scope(|| bfv.setup::<Goldilocks, GoldilocksExt2>());
     let proof =
@@ -62,11 +64,6 @@ pub fn porve_encrypt() {
 
     info_span!("FHE_enc verify")
         .in_scope(|| bfv.verify::<Goldilocks, GoldilocksExt2>(vk, inputs, args.ct0is, &proof));
-}
-
-#[wasm_bindgen]
-pub fn parse_args(val: JsValue) -> BfvSkEncryptArgs {
-    serde_wasm_bindgen::from_value(val).unwrap()
 }
 
 use tracing::level_filters::LevelFilter;
