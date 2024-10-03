@@ -70,3 +70,4 @@ goldilocks = { path = "../goldilocks" }
 
 [patch."https://github.com/Janmajayamall/bfv.git"]
 bfv = { path = "../examples/bfv/bfv" }
+traits = { path = "../examples/bfv/traits" }
