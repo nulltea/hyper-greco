@@ -19,18 +19,13 @@ pub fn init_panic_hook() {
 #[wasm_bindgen]
 pub fn parallel_sum(data: &[f64]) -> f64 {
     // Sum the data in parallel
-    tracing::info_span!("parallel_sum").in_scope(|| {
-        data.par_iter().sum()
-    })
+    tracing::info_span!("parallel_sum").in_scope(|| data.par_iter().sum())
 }
 
 #[wasm_bindgen]
 pub fn witness_preprocess(n_log2: usize) {
     tracing::info_span!("Witness preprocessing n = {}", n_log2).in_scope(|| {
-        tracing::info!(
-                    "Current num threads {}",
-                    rayon::current_num_threads()
-                );
+        tracing::info!("Current num threads {}", rayon::current_num_threads());
         bfv_rs::gen_witness(n_log2);
     });
 }
@@ -86,20 +81,18 @@ pub fn parse_args(val: JsValue) -> BfvSkEncryptArgs {
 }
 
 use tracing::level_filters::LevelFilter;
-use tracing_forest::{ForestLayer, PrettyPrinter, Printer};
 use tracing_forest::tag::NoTag;
+use tracing_forest::{ForestLayer, PrettyPrinter, Printer};
+use tracing_subscriber::fmt::format::{FmtSpan, Pretty};
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
-use tracing_subscriber::fmt::format::{FmtSpan, Pretty};
 
 #[wasm_bindgen(start)]
 fn setup() {
     init_panic_hook();
 
-
     // For WASM, we must set the directives here at compile time.
-    let filter_layer = EnvFilter::default()
-        .add_directive(LevelFilter::DEBUG.into());
+    let filter_layer = EnvFilter::default().add_directive(LevelFilter::DEBUG.into());
 
     let printer = Printer::new().writer(tracing_web::MakeWebConsoleWriter::new());
     let forest_layer = ForestLayer::new(printer, NoTag);

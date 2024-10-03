@@ -10,12 +10,15 @@ use fhe_math::{
 };
 use fhe_traits::*;
 use itertools::{izip, Itertools};
+use ndarray::{par_azip, Array, Ix1, Ix2, Zip};
 use num_bigint::BigInt;
 use num_traits::{FromPrimitive, Num, Signed, ToPrimitive, Zero};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
+use rayon::iter::{
+    IntoParallelIterator, IntoParallelRefIterator, ParallelBridge, ParallelIterator,
+};
 use rayon::prelude::*;
-use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelBridge, ParallelIterator};
 use serde_json::json;
 use std::io::Write;
 use std::ops::Deref;
@@ -23,7 +26,6 @@ use std::path::Path;
 use std::sync::Arc;
 use std::vec;
 use std::{collections::HashMap, fs::File};
-use ndarray::{par_azip, Array, Ix1, Ix2, Zip};
 use tracing::info_span;
 use tracing_forest::ForestLayer;
 use tracing_subscriber::{layer::SubscriberExt, EnvFilter, Registry};
@@ -35,17 +37,17 @@ use poly::*;
 pub struct InputValidationVectors {
     pub pk0is: Vec<Vec<BigInt>>,
     pub pk1is: Vec<Vec<BigInt>>,
-    pub   ct0is: Vec<Vec<BigInt>>,
-    pub    ct1is: Vec<Vec<BigInt>>,
-    pub   r1is: Vec<Vec<BigInt>>,
-    pub   r2is: Vec<Vec<BigInt>>,
-    pub  p1is: Vec<Vec<BigInt>>,
-    pub  p2is: Vec<Vec<BigInt>>,
-    pub   k0is: Vec<BigInt>,
-    pub  u: Vec<BigInt>,
-    pub   e0: Vec<BigInt>,
-    pub  e1: Vec<BigInt>,
-    pub   k1: Vec<BigInt>,
+    pub ct0is: Vec<Vec<BigInt>>,
+    pub ct1is: Vec<Vec<BigInt>>,
+    pub r1is: Vec<Vec<BigInt>>,
+    pub r2is: Vec<Vec<BigInt>>,
+    pub p1is: Vec<Vec<BigInt>>,
+    pub p2is: Vec<Vec<BigInt>>,
+    pub k0is: Vec<BigInt>,
+    pub u: Vec<BigInt>,
+    pub e0: Vec<BigInt>,
+    pub e1: Vec<BigInt>,
+    pub k1: Vec<BigInt>,
 }
 
 impl InputValidationVectors {
@@ -281,18 +283,53 @@ impl InputValidationVectors {
         #[cfg(feature = "sanity-check")]
         let plan_cyclo = PlanNtt::try_new(N as usize * 4).unwrap();
 
-
         tracing::info!("Start big ok parallel loop");
 
         let zipped = (
             ctx.moduli_operators(),
-            ct0.coefficients().rows().into_iter().map(|x| x.into_iter().rev().map(|&x| BigInt::from(x)).collect::<Vec<_>>()).collect::<Vec<_>>(),
-            ct1.coefficients().rows().into_iter().map(|x| x.into_iter().rev().map(|&x| BigInt::from(x)).collect::<Vec<_>>()).collect::<Vec<_>>(),
-            pk0.coefficients().rows().into_iter().map(|x| x.into_iter().rev().map(|&x| BigInt::from(x)).collect::<Vec<_>>()).collect::<Vec<_>>(),
-            pk1.coefficients().rows().into_iter().map(|x| x.into_iter().rev().map(|&x| BigInt::from(x)).collect::<Vec<_>>()).collect::<Vec<_>>()
+            ct0.coefficients()
+                .rows()
+                .into_iter()
+                .map(|x| {
+                    x.into_iter()
+                        .rev()
+                        .map(|&x| BigInt::from(x))
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>(),
+            ct1.coefficients()
+                .rows()
+                .into_iter()
+                .map(|x| {
+                    x.into_iter()
+                        .rev()
+                        .map(|&x| BigInt::from(x))
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>(),
+            pk0.coefficients()
+                .rows()
+                .into_iter()
+                .map(|x| {
+                    x.into_iter()
+                        .rev()
+                        .map(|&x| BigInt::from(x))
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>(),
+            pk1.coefficients()
+                .rows()
+                .into_iter()
+                .map(|x| {
+                    x.into_iter()
+                        .rev()
+                        .map(|&x| BigInt::from(x))
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>(),
         );
         tracing::info!("Iterator len: {}", ctx.moduli().len());
-           let results: (
+        let results: (
                    Vec<Vec<BigInt>>,
                    Vec<Vec<BigInt>>,
                    Vec<BigInt>,
@@ -523,16 +560,15 @@ impl InputValidationVectors {
                 acc.8.append(&mut b.8);
                 acc
             });
-            res.r2is = results.0;
-            res.r1is = results.1;
-            res.k0is = results.2;
-            res.ct0is = results.3;
-            res.ct1is = results.4;
-            res.pk0is = results.5;
-            res.pk1is = results.6;
-            res.p1is = results.7;
-            res.p2is = results.8;
-
+        res.r2is = results.0;
+        res.r1is = results.1;
+        res.k0is = results.2;
+        res.ct0is = results.3;
+        res.ct1is = results.4;
+        res.pk0is = results.5;
+        res.pk1is = results.6;
+        res.p1is = results.7;
+        res.p2is = results.8;
 
         // println!("Completed creation of polynomials!");
 
@@ -911,8 +947,9 @@ pub fn gen_witness(n_log2: usize) -> Result<(), Box<dyn std::error::Error>> {
 
     // Compute input validation vectors
     let ptc = pt.clone();
-    rayon::scope( |s| {
-        let res = info_span!("InputValidationVectors::compute").in_scope(|| {InputValidationVectors::compute(&ptc, &u_rns, &e0_rns, &e1_rns, &ct, &pk)});
+    rayon::scope(|s| {
+        let res = info_span!("InputValidationVectors::compute")
+            .in_scope(|| InputValidationVectors::compute(&ptc, &u_rns, &e0_rns, &e1_rns, &ct, &pk));
     });
 
     // Create output json with standard form polynomials
@@ -1002,7 +1039,7 @@ pub fn default_parameters_128(plaintext_nbits: usize, n_log2: usize) -> Arc<BfvP
 
 #[cfg(test)]
 mod test {
-    use tracing::{info_span};
+    use tracing::info_span;
     use tracing_forest::ForestLayer;
     use tracing_subscriber::{layer::SubscriberExt, EnvFilter, Registry};
 

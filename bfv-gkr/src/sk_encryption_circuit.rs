@@ -1,5 +1,5 @@
 use crate::constants::BfvSkEncryptConstans;
-use crate::{transcript::Keccak256Transcript, poly::Poly};
+use crate::{poly::Poly, transcript::Keccak256Transcript};
 use gkr::izip_eq;
 use gkr::{
     chain_par,
@@ -22,10 +22,10 @@ use plonkish_backend::util::hash::{Keccak256, Output};
 use rand::RngCore;
 use rayon::iter::ParallelIterator;
 use serde::Deserialize;
-use wasm_bindgen::prelude::wasm_bindgen;
 use std::cmp::min;
 use std::iter;
 use tracing::info_span;
+use wasm_bindgen::prelude::wasm_bindgen;
 
 const LIMB_BITS: usize = 16;
 const C: usize = 4;
@@ -550,7 +550,6 @@ fn relay_add_const<F>(w: (usize, usize), c: F) -> VanillaGate<F> {
 //     pub type Brakedown<F> =
 //         MultilinearBrakedown<F, plonkish_backend::util::hash::Keccak256, BrakedownSpec6>;
 
-
 //         pub fn test_sk_enc_valid_x() {
 //             type Params = crate::constants::SkEnc16384_8x54_65537;
 //             let env_filter = EnvFilter::builder()
@@ -565,7 +564,6 @@ fn relay_add_const<F>(w: (usize, usize), c: F) -> VanillaGate<F> {
 
 //             let rng = seeded_std_rng();
 
-            
 //             let mut file = File::open(&file_path).expect("Failed to open file");
 //             let mut data = String::new();
 //             file.read_to_string(&mut data).expect("Failed to read file");
@@ -584,7 +582,6 @@ fn relay_add_const<F>(w: (usize, usize), c: F) -> VanillaGate<F> {
 //             info_span!("FHE_enc verify")
 //                 .in_scope(|| bfv.verify::<Goldilocks, GoldilocksExt2, Brakedown<Goldilocks>>(vk, inputs, args.ct0is,  &proof));
 //         }
-        
 
 //     // Goldilocks prime tests
 
