@@ -1,5 +1,6 @@
 mod sk_enc_constants_1024_1x27_65537;
 mod sk_enc_constants_2048_1x52_65537;
+mod sk_enc_constants_2048_2x52_40961;
 mod sk_enc_constants_4096_2x55_65537;
 mod sk_enc_constants_8192_4x55_65537;
 mod sk_enc_constants_16384_8x54_65537;
@@ -9,6 +10,7 @@ mod sk_enc_constants_16384_8x46_786433;
 pub use sk_enc_constants_1024_1x27_65537::SkEnc1024_1x27_65537;
 pub use sk_enc_constants_16384_8x54_65537::SkEnc16384_8x54_65537;
 pub use sk_enc_constants_2048_1x52_65537::SkEnc2048_1x52_65537;
+pub use sk_enc_constants_2048_2x52_40961::SkEnc2048_2x52_40961;
 pub use sk_enc_constants_4096_2x55_65537::SkEnc4096_2x55_65537;
 pub use sk_enc_constants_8192_4x55_65537::SkEnc8192_4x55_65537;
 pub use sk_enc_constants_32768_16x59_65537::SkEnc32768_16x59_65537;

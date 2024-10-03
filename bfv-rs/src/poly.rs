@@ -115,6 +115,19 @@ pub fn poly_mul(plan: &PlanNtt, poly1: &[BigInt], poly2: &[BigInt]) -> Vec<BigIn
     vec_uint_into_bigint_poly(&product, product_len_orig)
 }
 
+pub fn poly_mul_naive(poly1: &[BigInt], poly2: &[BigInt]) -> Vec<BigInt> {
+    let product_len = poly1.len() + poly2.len() - 1;
+    let mut product = vec![BigInt::zero(); product_len];
+
+    for i in 0..poly1.len() {
+        for j in 0..poly2.len() {
+            product[i + j] += &poly1[i] * &poly2[j];
+        }
+    }
+
+    product
+}
+
 /// Divides one polynomial by another recursively based "divide-and-conquer" strategy.
 ///
 /// Returns the quotient and remainder, with both polynomials

@@ -1,6 +1,9 @@
 use crate::constants::BfvSkEncryptConstans;
-use crate::{transcript::Keccak256Transcript, poly::Poly};
+use crate::{poly::Poly, transcript::Keccak256Transcript};
+use bfv::BfvParameters;
 use gkr::izip_eq;
+use gkr::util::arithmetic::radix2_fft;
+use gkr::util::dev::seeded_std_rng;
 use gkr::{
     chain_par,
     circuit::{
@@ -14,18 +17,24 @@ use gkr::{
     util::{arithmetic::ExtensionField, Itertools},
     verify_gkr,
 };
-use itertools::chain;
+use itertools::{chain, izip};
 use lasso_gkr::{table::range::RangeLookup, LassoNode, LassoPreprocessing};
+use num_bigint::BigInt;
+use num_traits::ToPrimitive;
 use plonkish_backend::pcs::PolynomialCommitmentScheme;
 use plonkish_backend::poly::multilinear::MultilinearPolynomial;
+use plonkish_backend::util::arithmetic::root_of_unity;
 use plonkish_backend::util::hash::{Keccak256, Output};
 use rand::RngCore;
-use rayon::iter::ParallelIterator;
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use serde::Deserialize;
-use wasm_bindgen::prelude::wasm_bindgen;
 use std::cmp::min;
 use std::iter;
 use tracing::info_span;
+use tracing_forest::ForestLayer;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::{EnvFilter, Registry};
+use wasm_bindgen::prelude::wasm_bindgen;
 
 const LIMB_BITS: usize = 16;
 const C: usize = 4;
@@ -51,37 +60,17 @@ pub type VerifierKey<
     // >,
 > = LassoPreprocessing<F, E>;
 
-/// `BfvSkEncryptionCircuit` is a circuit that checks the correct formation of a ciphertext resulting from BFV secret key encryption
-/// All the polynomials coefficients and scalars are normalized to be in the range `[0, p)` where p is the modulus of the prime field of the circuit
-///
-/// # Parameters:
-/// * `s`: secret polynomial, sampled from ternary distribution.
-/// * `e`: error polynomial, sampled from discrete Gaussian distribution.
-/// * `k1`: scaled message polynomial.
-/// * `r2is`: list of r2i polynomials for each i-th CRT basis .
-/// * `r1is`: list of r1i polynomials for each CRT i-th CRT basis.
-/// * `ais`: list of ai polynomials for each CRT i-th CRT basis.
-/// * `ct0is`: list of ct0i (first component of the ciphertext cti) polynomials for each CRT i-th CRT basis.
-#[wasm_bindgen]
-#[derive(Deserialize, Clone)]
-pub struct BfvSkEncryptArgs {
-    s: Vec<String>,
-    e: Vec<String>,
-    k1: Vec<String>,
-    r2is: Vec<Vec<String>>,
-    r1is: Vec<Vec<String>>,
-    ais: Vec<Vec<String>>,
-    ct0is: Vec<Vec<String>>,
-}
+pub type BfvSkEncryptArgs = bfv_rs::InputValidationVectors;
 
-pub struct BfvEncryptBlock<Params: BfvSkEncryptConstans<K>, const K: usize> {
+pub struct BfvEncryptBlock {
+    params: BfvParameters,
+    bounds: bfv_rs::InputValidationBounds,
     num_reps: usize,
-    _marker: std::marker::PhantomData<Params>,
 }
 
-impl<Params: BfvSkEncryptConstans<K>, const K: usize> BfvEncryptBlock<Params, K> {
+impl BfvEncryptBlock {
     pub const fn log2_size(&self) -> usize {
-        Params::N_LOG2 + 1
+        self.params.degree.ilog2() as usize + 1
     }
 
     // single block
@@ -93,7 +82,7 @@ impl<Params: BfvSkEncryptConstans<K>, const K: usize> BfvEncryptBlock<Params, K>
         k1: NodeId,
         preprocessing: LassoPreprocessing<F, E>,
     ) -> NodeId {
-        let poly_log2_size = Params::N_LOG2;
+        let poly_log2_size = self.params.degree.ilog2() as usize;
         let log2_size = self.log2_size();
 
         let es = {
@@ -108,7 +97,10 @@ impl<Params: BfvSkEncryptConstans<K>, const K: usize> BfvEncryptBlock<Params, K>
             let gates = (0..self.num_reps)
                 .flat_map(|i| {
                     (0..(1usize << log2_size)).map(move |j| {
-                        relay_mul_const((0, j), F::from_str_vartime(Params::K0IS[i]).unwrap())
+                        relay_mul_const(
+                            (0, j),
+                            F::from_u128(self.bounds.k01s[i].to_u128().unwrap()),
+                        )
                     })
                 })
                 .collect_vec();
@@ -134,7 +126,7 @@ impl<Params: BfvSkEncryptConstans<K>, const K: usize> BfvEncryptBlock<Params, K>
             let gates = (0..self.num_reps)
                 .flat_map(|i| {
                     (0..r1i_size).map(move |j| {
-                        relay_mul_const((i, j), F::from_str_vartime(Params::QIS[i]).unwrap())
+                        relay_mul_const((i, j), F::from_u128(self.bounds.qis[i].to_u128().unwrap()))
                     })
                 })
                 .collect_vec();
@@ -164,9 +156,9 @@ impl<Params: BfvSkEncryptConstans<K>, const K: usize> BfvEncryptBlock<Params, K>
 
         let lasso_inputs_batched = {
             let gates = chain![
-                Params::R1_BOUNDS.iter().take(self.num_reps).copied(),
-                iter::repeat(Params::R2_BOUNDS[0]).take(r2is_chunks.len()),
-                vec![Params::S_BOUND, Params::E_BOUND, Params::K1_BOUND],
+                self.bounds.r1.iter().take(self.num_reps).copied(),
+                iter::repeat(self.bounds.r2[0]).take(r2is_chunks.len()),
+                vec![self.bounds.s, self.bounds.e, self.bounds.k1],
             ]
             .enumerate()
             .flat_map(|(i, bound)| {
@@ -188,19 +180,21 @@ impl<Params: BfvSkEncryptConstans<K>, const K: usize> BfvEncryptBlock<Params, K>
                 poly_log2_size
             };
             let lookups = chain![
-                Params::R1_BOUNDS
+                self.bounds
+                    .r1
                     .iter()
                     .take(self.num_reps)
                     .flat_map(|&bound| iter::repeat(RangeLookup::id_for(bound * 2 + 1))
                         .take(1 << log2_size)),
-                Params::R2_BOUNDS
+                self.bounds
+                    .r2
                     .iter()
                     .take(self.num_reps)
                     .flat_map(|&bound| iter::repeat(RangeLookup::id_for(bound * 2 + 1))
                         .take(1 << r2i_log2_size)),
-                iter::repeat(RangeLookup::id_for(Params::S_BOUND * 2 + 1)).take(1 << log2_size),
-                iter::repeat(RangeLookup::id_for(Params::E_BOUND * 2 + 1)).take(1 << log2_size),
-                iter::repeat(RangeLookup::id_for(Params::K1_BOUND * 2 + 1)).take(1 << log2_size),
+                iter::repeat(RangeLookup::id_for(self.bounds.s * 2 + 1)).take(1 << log2_size),
+                iter::repeat(RangeLookup::id_for(self.bounds.e * 2 + 1)).take(1 << log2_size),
+                iter::repeat(RangeLookup::id_for(self.bounds.k1 * 2 + 1)).take(1 << log2_size),
             ]
             .collect_vec();
             let num_vars = lookups.len().next_power_of_two().ilog2() as usize;
@@ -299,22 +293,27 @@ impl<Params: BfvSkEncryptConstans<K>, const K: usize> BfvEncryptBlock<Params, K>
     }
 }
 
-pub struct BfvEncrypt<Params: BfvSkEncryptConstans<K>, const K: usize> {
-    block: BfvEncryptBlock<Params, K>,
+pub struct BfvEncrypt {
+    block: BfvEncryptBlock,
 }
 
-impl<Params: BfvSkEncryptConstans<K>, const K: usize> BfvEncrypt<Params, K> {
-    pub fn new(num_reps: usize) -> Self {
+impl BfvEncrypt {
+    pub fn new(
+        params: BfvParameters,
+        bounds: bfv_rs::InputValidationBounds,
+        num_reps: usize,
+    ) -> Self {
         Self {
             block: BfvEncryptBlock {
+                params,
+                bounds,
                 num_reps,
-                _marker: std::marker::PhantomData,
             },
         }
     }
 
     pub const fn log2_size(&self) -> usize {
-        Params::N_LOG2 + 1
+        self.block.log2_size()
     }
 
     #[allow(clippy::type_complexity)]
@@ -327,15 +326,19 @@ impl<Params: BfvSkEncryptConstans<K>, const K: usize> BfvEncrypt<Params, K> {
     ) -> (ProverKey<F, E>, VerifierKey<F, E>) {
         let mut lasso_preprocessing = LassoPreprocessing::<F, E>::preprocess::<C, M>(chain![
             [
-                RangeLookup::new_boxed(Params::S_BOUND * 2 + 1),
-                RangeLookup::new_boxed(Params::E_BOUND * 2 + 1),
-                RangeLookup::new_boxed(Params::K1_BOUND * 2 + 1)
+                RangeLookup::new_boxed(self.block.bounds.s * 2 + 1),
+                RangeLookup::new_boxed(self.block.bounds.e * 2 + 1),
+                RangeLookup::new_boxed(self.block.bounds.k1 * 2 + 1)
             ],
-            Params::R1_BOUNDS
+            self.block
+                .bounds
+                .r1
                 .iter()
                 .take(self.block.num_reps)
                 .map(|&bound| RangeLookup::new_boxed(bound * 2 + 1)),
-            Params::R2_BOUNDS
+            self.block
+                .bounds
+                .r2
                 .iter()
                 .take(self.block.num_reps)
                 .map(|&bound| RangeLookup::new_boxed(bound * 2 + 1))
@@ -472,7 +475,7 @@ impl<Params: BfvSkEncryptConstans<K>, const K: usize> BfvEncrypt<Params, K> {
         &self,
         vk: VerifierKey<F, E>,
         inputs: Vec<BoxMultilinearPoly<'static, F, E>>,
-        ct0is: Vec<Vec<String>>,
+        ct0is: Vec<Vec<BigInt>>,
         proof: &[u8],
     ) {
         let preprocessing = vk;
@@ -521,6 +524,161 @@ impl<Params: BfvSkEncryptConstans<K>, const K: usize> BfvEncrypt<Params, K> {
         assert!(self.block.num_reps.is_power_of_two());
         self.log2_size() + self.block.num_reps.next_power_of_two().ilog2() as usize
     }
+
+    pub fn gen_values<F: PrimeField, E: ExtensionField<F>>(
+        &self,
+        args: &BfvSkEncryptArgs,
+    ) -> Vec<BoxMultilinearPoly<'static, F, E>>
+    where
+        F::Repr: Into<u64>,
+    {
+        let log2_size = self.log2_size();
+
+        let s = Poly::<F>::new_padded(args.s.clone(), log2_size);
+        let e = Poly::<F>::new_shifted(args.e.clone(), (1 << log2_size) - 1);
+        let k1 = Poly::<F>::new_shifted(args.k1.clone(), (1 << log2_size) - 1);
+
+        let mut r2is = vec![];
+        let mut r1is = vec![];
+        let mut ais = vec![];
+        let mut ct0is = vec![];
+
+        let mut qi_constants = vec![];
+        let mut k0i_constants = vec![];
+
+        for z in 0..min(args.ct0is.len(), self.block.num_reps) {
+            let r2i = Poly::<F>::new(args.r2is[z].clone());
+            r2is.push(r2i.to_vec());
+
+            let r1i = Poly::<F>::new_padded(args.r1is[z].clone(), log2_size);
+            r1is.push(r1i.to_vec());
+
+            let ai = Poly::<F>::new_padded(args.ais[z].clone(), log2_size);
+            ais.push(ai.to_vec());
+
+            let ct0i = Poly::<F>::new_shifted(args.ct0is[z].clone(), 1 << log2_size);
+            let mut ct0i = ct0i.as_ref()[1..].to_vec();
+            ct0i.push(F::ZERO);
+            ct0is.extend(ct0i);
+
+            qi_constants.push(F::from(self.block.bounds.qis[z]));
+            k0i_constants.push(F::from_u128(self.block.bounds.k01s[z].to_u128().unwrap()));
+        }
+
+        let es = (0..self.block.num_reps)
+            .flat_map(|_| e.as_ref().to_vec())
+            .collect_vec();
+        let k1k0is = (0..self.block.num_reps)
+            .flat_map(|i| {
+                k1.as_ref()
+                    .iter()
+                    .map(move |&k1| k1 * F::from_u128(self.block.bounds.k01s[i].to_u128().unwrap()))
+            })
+            .collect_vec();
+        let r1iqis = (0..self.block.num_reps)
+            .flat_map(|i| {
+                r1is[i]
+                    .iter()
+                    .map(move |&r1i| r1i * F::from(self.block.bounds.qis[i]))
+            })
+            .collect_vec();
+
+        let omega = root_of_unity(log2_size);
+
+        let s_eval = {
+            let mut buf = s.to_vec();
+            radix2_fft(&mut buf, omega);
+            buf
+        };
+
+        let ai_evals = ais
+            .iter()
+            .map(|ai| {
+                let mut buf = ai.clone();
+                radix2_fft(&mut buf, omega);
+                buf
+            })
+            .collect_vec();
+
+        let sai_evals = ai_evals
+            .iter()
+            .map(|ai_eval| {
+                izip!(s_eval.clone(), ai_eval.clone())
+                    .map(|(s_e, ai_e)| s_e * ai_e)
+                    .collect_vec()
+            })
+            .collect_vec();
+
+        let sais: Vec<_> = sai_evals
+            .par_iter()
+            .map(|sai_eval| {
+                let mut buf = sai_eval.clone();
+                radix2_ifft(&mut buf, omega);
+                buf
+            })
+            .collect();
+
+        let sai_values = izip!(ai_evals, sai_evals, sais.clone())
+            .flat_map(|(ai_eval, sai_eval, sai)| [ai_eval, sai_eval, sai])
+            .collect_vec();
+
+        let sai = sais.iter().flatten().cloned().collect_vec();
+
+        let r2is_cyclo = r2is
+            .iter()
+            .take(self.block.num_reps)
+            .flat_map(|r2i| {
+                let mut result = vec![F::ZERO; 2 * self.block.params.degree]; // Allocate result vector of size 2N-1
+
+                for i in 0..r2i.len() {
+                    result[i] += r2i[i]; // Add P(x)
+                    result[i + self.block.params.degree] += r2i[i]; // Add P(x) * x^N
+                }
+                result
+            })
+            .collect_vec();
+
+        let r2is = r2is
+            .into_iter()
+            .take(self.block.num_reps)
+            .flat_map(|mut r2i| {
+                r2i.push(F::ZERO);
+                r2i
+            })
+            .collect_vec();
+
+        let ct0i_check = sai
+            .iter()
+            .zip(e.as_ref().iter())
+            .zip(k1.as_ref().iter())
+            .zip(r1is[0].iter())
+            .zip(r2is_cyclo.iter())
+            .map(|((((sai0, e), k1), r1i), r2i_cyclo)| {
+                *sai0 + *e + *k1 * k0i_constants[0] + *r1i * qi_constants[0] + *r2i_cyclo
+            })
+            .collect_vec();
+
+        assert!(ct0i_check == ct0is);
+
+        chain_par![
+            [s.to_vec(), e.to_vec(), k1.to_vec()],
+            [es, k1k0is],
+            ais,
+            r1is,
+            [r1iqis],
+            [r2is, vec![F::ZERO]],
+            // [r2is],
+            // [r2is_m, r2is_t, vec![F::ZERO]] // r2is_range
+            [s_eval.clone()],
+            [s_eval],
+            [sai],
+            sai_values,
+            [r2is_cyclo],
+            [ct0is]
+        ]
+        .map(box_dense_poly)
+        .collect()
+    }
 }
 
 fn relay_mul_const<F>(w: (usize, usize), c: F) -> VanillaGate<F> {
@@ -531,134 +689,165 @@ fn relay_add_const<F>(w: (usize, usize), c: F) -> VanillaGate<F> {
     VanillaGate::new(Some(c), vec![(None, w)], Vec::new())
 }
 
-// #[cfg(test)]
-// mod test {
-//     use crate::generate_sk_enc_test;
+pub fn radix2_ifft<F: PrimeField>(buf: &mut [F], omega: F) {
+    let n = buf.len();
+    let omega_inv = omega.invert().unwrap();
 
-//     use super::*;
-//     use gkr::util::dev::seeded_std_rng;
-//     use goldilocks::{Goldilocks, GoldilocksExt2};
-//     use halo2_curves::bn256::Fr;
+    radix2_fft(buf, omega_inv);
 
-//     use paste::paste;
-//     use plonkish_backend::{pcs::multilinear::MultilinearBrakedown, util::code::BrakedownSpec6};
-//     use std::{fs::File, io::Read};
-//     use tracing::info_span;
-//     use tracing_forest::ForestLayer;
-//     use tracing_subscriber::{layer::SubscriberExt, EnvFilter, Registry};
+    // Normalize the result by dividing by n
+    let n_inv = F::from(n as u64).invert().unwrap(); // Assuming `Field` has an inverse method
+    buf.iter_mut().for_each(|x| *x *= &n_inv);
+}
 
-//     pub type Brakedown<F> =
-//         MultilinearBrakedown<F, plonkish_backend::util::hash::Keccak256, BrakedownSpec6>;
+#[cfg(test)]
+mod test {
+    use crate::generate_sk_enc_test;
 
+    use super::*;
+    use bfv::{BfvParameters, Encoding, EncodingType, Plaintext, PolyCache, SecretKey};
+    use gkr::util::dev::seeded_std_rng;
+    use goldilocks::{Goldilocks, GoldilocksExt2};
+    // use halo2_curves::bn256::Fr;
 
-//         pub fn test_sk_enc_valid_x() {
-//             type Params = crate::constants::SkEnc16384_8x54_65537;
-//             let env_filter = EnvFilter::builder()
-//                 .with_default_directive(tracing::Level::INFO.into())
-//                 .from_env_lossy();
+    use num_traits::Num;
+    use paste::paste;
+    use plonkish_backend::{pcs::multilinear::MultilinearBrakedown, util::code::BrakedownSpec6};
+    use rand::{rngs::StdRng, SeedableRng};
+    use std::{fs::File, io::Read};
+    use tracing::info_span;
+    use tracing_forest::ForestLayer;
+    use tracing_subscriber::{layer::SubscriberExt, EnvFilter, Registry};
 
-//             let subscriber = Registry::default()
-//                 .with(env_filter)
-//                 .with(ForestLayer::default());
+    #[test]
+    fn test_sk_enc_valid_x() {
+        let env_filter = EnvFilter::builder()
+            .with_default_directive(tracing::Level::INFO.into())
+            .from_env_lossy();
 
-//             let _ = tracing::subscriber::set_global_default(subscriber);
+        let subscriber = Registry::default()
+            .with(env_filter)
+            .with(ForestLayer::default());
 
-//             let rng = seeded_std_rng();
+        let _ = tracing::subscriber::set_global_default(subscriber);
 
-            
-//             let mut file = File::open(&file_path).expect("Failed to open file");
-//             let mut data = String::new();
-//             file.read_to_string(&mut data).expect("Failed to read file");
-//             let bfv = BfvEncrypt::<Params, 8>::new(8);
-//             let args =
-//                 serde_json::from_str::<BfvSkEncryptArgs>(&data).expect("Failed to parse JSON");
+        let mut rng = StdRng::seed_from_u64(0);
 
-//             let (pk, vk) =
-//                 info_span!("setup").in_scope(|| bfv.setup::<Goldilocks, GoldilocksExt2, Brakedown<Goldilocks>>(rng.clone()));
-//             let proof = info_span!("FHE_enc prove")
-//                 .in_scope(|| bfv.prove::<Goldilocks, GoldilocksExt2, Brakedown<Goldilocks>>(&args, pk));
+        let params = BfvParameters::new_with_primes(
+            vec![1032193, 1073692673],
+            vec![995329, 1073668097],
+            40961,
+            1 << 11,
+        );
+        let N: u64 = params.degree as u64;
+        let bounds = bfv_rs::setup_witness(&params).unwrap();
+        let bfv = BfvEncrypt::new(params.clone(), bounds, 1);
 
-//             let (inputs, _) =
-//                 info_span!("parse inputs").in_scope(|| bfv.get_inputs(&args));
+        let args = {
+            let sk = SecretKey::random_with_params(&params, &mut rng);
 
-//             info_span!("FHE_enc verify")
-//                 .in_scope(|| bfv.verify::<Goldilocks, GoldilocksExt2, Brakedown<Goldilocks>>(vk, inputs, args.ct0is,  &proof));
-//         }
-        
+            let m: Vec<_> = (0..(N as u64)).collect_vec(); // m here is from lowest degree to largest as input into fhe.rs (REQUIRED)
+            let pt = Plaintext::encode(
+                &m,
+                &params,
+                Encoding {
+                    encoding_type: EncodingType::Poly,
+                    poly_cache: PolyCache::None,
+                    level: 0,
+                },
+            );
 
-//     // Goldilocks prime tests
+            let (ct, e) = sk.encrypt(&params, &pt, &mut rng);
 
-//     generate_sk_enc_test!(
-//         "goldilocks",
-//         Goldilocks,
-//         GoldilocksExt2,
-//         Brakedown<Goldilocks>,
-//         1024,
-//         1,
-//         27
-//     );
+            let p = BigInt::from_str_radix("18446744069414584321", 10).unwrap();
 
-//     generate_sk_enc_test!(
-//         "goldilocks",
-//         Goldilocks,
-//         GoldilocksExt2,
-//         Brakedown<Goldilocks>,
-//         2048,
-//         1,
-//         52
-//     );
+            bfv_rs::gen_witness(params, ct, e, pt, sk, &p).unwrap()
+        };
 
-//     generate_sk_enc_test!(
-//         "goldilocks",
-//         Goldilocks,
-//         GoldilocksExt2,
-//         Brakedown<Goldilocks>,
-//         4096,
-//         2,
-//         55
-//     );
+        bfv.gen_values::<Goldilocks, GoldilocksExt2>(&args);
+        let (pk, vk) = info_span!("setup").in_scope(|| bfv.setup::<Goldilocks, GoldilocksExt2>());
+        let proof = info_span!("FHE_enc prove")
+            .in_scope(|| bfv.prove::<Goldilocks, GoldilocksExt2>(&args, pk));
 
-//     generate_sk_enc_test!(
-//         "goldilocks",
-//         Goldilocks,
-//         GoldilocksExt2,
-//         Brakedown<Goldilocks>,
-//         8192,
-//         4,
-//         55
-//     );
+        let (inputs, _) = info_span!("parse inputs").in_scope(|| bfv.get_inputs(&args));
 
-//     generate_sk_enc_test!(
-//         "goldilocks",
-//         Goldilocks,
-//         GoldilocksExt2,
-//         Brakedown<Goldilocks>,
-//         16384,
-//         8,
-//         54
-//     );
+        info_span!("FHE_enc verify")
+            .in_scope(|| bfv.verify::<Goldilocks, GoldilocksExt2>(vk, inputs, args.ct0is, &proof));
+    }
 
-//     generate_sk_enc_test!(
-//         "goldilocks",
-//         Goldilocks,
-//         GoldilocksExt2,
-//         Brakedown<Goldilocks>,
-//         32768,
-//         16,
-//         59
-//     );
+    //     // Goldilocks prime tests
 
-//     // Bn254 prime tests
+    //     generate_sk_enc_test!(
+    //         "goldilocks",
+    //         Goldilocks,
+    //         GoldilocksExt2,
+    //         Brakedown<Goldilocks>,
+    //         1024,
+    //         1,
+    //         27
+    //     );
 
-//     generate_sk_enc_test!("bn254", Fr, Fr, Brakedown<Fr>, 1024, 1, 27);
+    //     generate_sk_enc_test!(
+    //         "goldilocks",
+    //         Goldilocks,
+    //         GoldilocksExt2,
+    //         Brakedown<Goldilocks>,
+    //         2048,
+    //         1,
+    //         52
+    //     );
 
-//     generate_sk_enc_test!("bn254", Fr, Fr, Brakedown<Fr>, 2048, 1, 52);
+    //     generate_sk_enc_test!(
+    //         "goldilocks",
+    //         Goldilocks,
+    //         GoldilocksExt2,
+    //         Brakedown<Goldilocks>,
+    //         4096,
+    //         2,
+    //         55
+    //     );
 
-//     generate_sk_enc_test!("bn254", Fr, Fr, Brakedown<Fr>, 4096, 2, 55);
+    //     generate_sk_enc_test!(
+    //         "goldilocks",
+    //         Goldilocks,
+    //         GoldilocksExt2,
+    //         Brakedown<Goldilocks>,
+    //         8192,
+    //         4,
+    //         55
+    //     );
 
-//     generate_sk_enc_test!("bn254", Fr, Fr, Brakedown<Fr>, 8192, 4, 55);
+    //     generate_sk_enc_test!(
+    //         "goldilocks",
+    //         Goldilocks,
+    //         GoldilocksExt2,
+    //         Brakedown<Goldilocks>,
+    //         16384,
+    //         8,
+    //         54
+    //     );
 
-//     generate_sk_enc_test!("bn254", Fr, Fr, Brakedown<Fr>, 16384, 8, 54);
+    //     generate_sk_enc_test!(
+    //         "goldilocks",
+    //         Goldilocks,
+    //         GoldilocksExt2,
+    //         Brakedown<Goldilocks>,
+    //         32768,
+    //         16,
+    //         59
+    //     );
 
-//     generate_sk_enc_test!("bn254", Fr, Fr, Brakedown<Fr>, 32768, 16, 59);
-// }
+    //     // Bn254 prime tests
+
+    //     generate_sk_enc_test!("bn254", Fr, Fr, Brakedown<Fr>, 1024, 1, 27);
+
+    //     generate_sk_enc_test!("bn254", Fr, Fr, Brakedown<Fr>, 2048, 1, 52);
+
+    //     generate_sk_enc_test!("bn254", Fr, Fr, Brakedown<Fr>, 4096, 2, 55);
+
+    //     generate_sk_enc_test!("bn254", Fr, Fr, Brakedown<Fr>, 8192, 4, 55);
+
+    //     generate_sk_enc_test!("bn254", Fr, Fr, Brakedown<Fr>, 16384, 8, 54);
+
+    //     generate_sk_enc_test!("bn254", Fr, Fr, Brakedown<Fr>, 32768, 16, 59);
+}
