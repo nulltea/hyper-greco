@@ -691,19 +691,11 @@ pub fn radix2_ifft<F: PrimeField>(buf: &mut [F], omega: F) {
 
 #[cfg(test)]
 mod test {
-    use crate::generate_sk_enc_test;
-
     use super::*;
-    use bfv::{BfvParameters, Encoding, EncodingType, Plaintext, PolyCache, SecretKey};
-    use gkr::util::dev::seeded_std_rng;
+    use bfv::{BfvParameters, Encoding, Plaintext, SecretKey};
     use goldilocks::{Goldilocks, GoldilocksExt2};
-    // use halo2_curves::bn256::Fr;
-
-    use num_traits::{FromPrimitive, Num};
-    use paste::paste;
-    use plonkish_backend::{pcs::multilinear::MultilinearBrakedown, util::code::BrakedownSpec6};
+    use num_traits::FromPrimitive;
     use rand::{rngs::StdRng, SeedableRng};
-    use std::{fs::File, io::Read};
     use tracing::info_span;
     use tracing_forest::ForestLayer;
     use tracing_subscriber::{layer::SubscriberExt, EnvFilter, Registry};
@@ -735,7 +727,7 @@ mod test {
         let args = {
             let sk = SecretKey::random_with_params(&params, &mut rng);
 
-            let m: Vec<_> = (0..(N as u64)).collect_vec(); // m here is from lowest degree to largest as input into fhe.rs (REQUIRED)
+            let m: Vec<_> = (0..N).collect_vec(); // m here is from lowest degree to largest as input into fhe.rs (REQUIRED)
             let pt = Plaintext::encode(&m, &params, Encoding::default());
 
             let p = BigInt::from_u64(18446744069414584321).unwrap();

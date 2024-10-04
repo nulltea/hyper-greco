@@ -1,26 +1,13 @@
 mod poly;
 
-use bfv::{generate_prime, Modulus, NttOperator, Poly, Representation};
-use bfv::{
-    BfvParameters, Ciphertext, Encoding, EncodingType, Plaintext, PolyCache, PublicKey, SecretKey,
-};
-use concrete_ntt::native64::Plan32;
-use itertools::{izip, Itertools};
+use bfv::{BfvParameters, Ciphertext, Plaintext, SecretKey};
+use bfv::{Modulus, Poly, Representation};
+use itertools::izip;
 use num_bigint::{BigInt, BigUint};
-use num_traits::{FromPrimitive, Num, One, Signed, ToPrimitive, Zero};
+use num_traits::{FromPrimitive, One, Signed, ToPrimitive, Zero};
 use rand::rngs::StdRng;
-use rand::SeedableRng;
-use rayon::iter::{ParallelBridge, ParallelIterator};
-use serde_json::json;
-use std::io::Write;
-use std::ops::Deref;
-use std::path::Path;
-use std::sync::Arc;
 use std::vec;
-use std::{collections::HashMap, fs::File};
 use tracing::info_span;
-use tracing_forest::ForestLayer;
-use tracing_subscriber::{layer::SubscriberExt, EnvFilter, Registry};
 
 use poly::*;
 
@@ -38,6 +25,7 @@ pub struct InputValidationVectors {
 }
 
 /// The `InputValidationBounds` struct holds the bounds for various vectors and polynomials used in the input validation process.
+///
 /// These bounds are calculated from a set of BFV encryption parameters and represent limits on the values of different fields
 /// to ensure that the inputs remain within valid ranges during operations.
 #[derive(Clone, Debug)]
@@ -88,7 +76,6 @@ impl InputValidationBounds {
         let num_moduli = ctx.moduli_count();
         let mut r2_bounds: Vec<BigInt> = vec![BigInt::zero(); num_moduli];
         let mut r1_bounds: Vec<BigInt> = vec![BigInt::zero(); num_moduli];
-        let mut k01s: Vec<BigInt> = vec![BigInt::zero(); num_moduli];
         for (i, qi) in ctx.moduli_ops().iter().enumerate() {
             let qi_bigint = BigInt::from(qi.modulus());
             let qi_bound = (&qi_bigint - BigInt::from(1)) / BigInt::from(2);
@@ -171,28 +158,6 @@ impl InputValidationVectors {
         }
     }
 
-    /// Convert the `InputValidationVectors` to a JSON object.
-    ///
-    /// # Returns
-    ///
-    /// Returns a `serde_json::Value` representing the JSON serialization of the `InputValidationVectors`.
-    // pub fn to_json(&self) -> serde_json::Value {
-    //     json!({
-    //         "pk0i": to_string_2d_vec(&self.pk0is),
-    //         "pk1i": to_string_2d_vec(&self.pk1is),
-    //         "u": to_string_1d_vec(&self.u),
-    //         "e0": to_string_1d_vec(&self.e0),
-    //         "e1": to_string_1d_vec(&self.e1),
-    //         "k1": to_string_1d_vec(&self.k1),
-    //         "r2is": to_string_2d_vec(&self.r2is),
-    //         "r1is": to_string_2d_vec(&self.r1is),
-    //         "p2is": to_string_2d_vec(&self.p2is),
-    //         "p1is": to_string_2d_vec(&self.p1is),
-    //         "ct0is": to_string_2d_vec(&self.ct0is),
-    //         "ct1is": to_string_2d_vec(&self.ct1is),
-    //     })
-    // }
-
     /// Create the centered validation vectors necessary for creating an input validation proof according to Greco.
     /// For more information, please see https://eprint.iacr.org/2024/594.
     ///
@@ -212,7 +177,7 @@ impl InputValidationVectors {
         // Get context, plaintext modulus, and degree
         let ctx = params.poly_ctx(&bfv::PolyType::Q, pt.level());
         let t = Modulus::new(params.plaintext_modulus);
-        let N: u64 = ctx.degree() as u64;
+        let n: u64 = ctx.degree() as u64;
 
         let mut product = BigUint::one();
         ctx.moduli_ops().iter().for_each(|m| {
@@ -224,7 +189,7 @@ impl InputValidationVectors {
             .to_u64()
             .ok_or_else(|| "Cannot convert BigInt to u64.".to_string())?; // [q]_t
 
-        let mut k1_u64 = pt.value().deref().to_vec(); // m
+        let mut k1_u64 = pt.value().to_vec(); // m
         t.scalar_mul_vec(&mut k1_u64, q_mod_t); // k1 = [q*m]_t
         let mut k1: Vec<BigInt> = k1_u64.iter().map(|&x| BigInt::from(x)).rev().collect();
         reduce_and_center_coefficients_mut(&mut k1, &BigInt::from(t.modulus()));
@@ -256,8 +221,6 @@ impl InputValidationVectors {
             .map(|&x| BigInt::from_i64(x).unwrap())
             .collect();
 
-        let p = BigInt::from_str_radix("18446744069414584321", 10).unwrap();
-
         // Extract and convert ciphertext and plaintext polynomials
         let mut ct0 = ct.c_ref()[0].clone();
         let mut ct1 = ct.c_ref()[1].clone();
@@ -265,15 +228,15 @@ impl InputValidationVectors {
         ctx.change_representation(&mut ct1, Representation::Coefficient);
 
         // Create cyclotomic polynomial x^N + 1
-        let mut cyclo = vec![BigInt::from(0u64); (N + 1) as usize];
+        let mut cyclo = vec![BigInt::from(0u64); (n + 1) as usize];
         cyclo[0] = BigInt::from(1u64); // x^N term
-        cyclo[N as usize] = BigInt::from(1u64); // x^0 term
+        cyclo[n as usize] = BigInt::from(1u64); // x^0 term
 
         // Initialize matrices to store results
         let num_moduli = ctx.moduli_count();
-        let mut res = InputValidationVectors::new(num_moduli, N as usize);
+        let mut res = InputValidationVectors::new(num_moduli, n as usize);
 
-        let plan = PlanNtt::try_new(N as usize * 2).unwrap();
+        let plan = PlanNtt::try_new(n as usize * 2).unwrap();
         #[cfg(feature = "sanity-check")]
         let plan_cyclo = PlanNtt::try_new(N as usize * 4).unwrap();
 
@@ -324,18 +287,18 @@ impl InputValidationVectors {
                     let sai = poly_mul(&plan, &ai, &s);
 
                     #[cfg(feature = "sanity-check")]
-                    assert_eq!((pk0i_times_u.len() as u64) - 1, 2 * (N - 1));
+                    assert_eq!((pk0i_times_u.len() as u64) - 1, 2 * (n - 1));
 
                     let e_plus_ki = poly_add(&e, &ki);
 
                     #[cfg(feature = "sanity-check")]
-                    assert_eq!((e_plus_ki.len() as u64) - 1, N - 1);
+                    assert_eq!((e_plus_ki.len() as u64) - 1, n - 1);
 
                     poly_add(&sai, &e_plus_ki)
                 });
 
                 #[cfg(feature = "sanity-check")]
-                assert_eq!((ct0i_hat.len() as u64) - 1, 2 * (N - 1));
+                assert_eq!((ct0i_hat.len() as u64) - 1, 2 * (n - 1));
 
                 // Check whether ct0i_hat mod R_qi (the ring) is equal to ct0i
                 let mut ct0i_hat_mod_rqi = ct0i_hat.clone();
@@ -350,7 +313,7 @@ impl InputValidationVectors {
                 let ct0i_minus_ct0i_hat = poly_sub(&ct0i, &ct0i_hat);
 
                 #[cfg(feature = "sanity-check")]
-                assert_eq!((ct0i_minus_ct0i_hat.len() as u64) - 1, 2 * (N - 1));
+                assert_eq!((ct0i_minus_ct0i_hat.len() as u64) - 1, 2 * (n - 1));
 
                 let mut ct0i_minus_ct0i_hat_mod_zqi = ct0i_minus_ct0i_hat.clone();
                 reduce_and_center_coefficients_mut(&mut ct0i_minus_ct0i_hat_mod_zqi, &qi_bigint);
@@ -363,7 +326,7 @@ impl InputValidationVectors {
                 #[cfg(feature = "sanity-check")]
                 {
                     assert!(_r2i_rem.is_empty());
-                    assert_eq!((r2i.len() as u64) - 1, N - 2); // Order(r2i) = N - 2
+                    assert_eq!((r2i.len() as u64) - 1, n - 2); // Order(r2i) = N - 2
                 }
 
                 // Assert that (ct0i - ct0i_hat) = (r2i * cyclo) mod Z_qi
@@ -374,20 +337,20 @@ impl InputValidationVectors {
                 #[cfg(feature = "sanity-check")]
                 {
                     assert_eq!(&ct0i_minus_ct0i_hat_mod_zqi, &r2i_times_cyclo_mod_zqi);
-                    assert_eq!((r2i_times_cyclo.len() as u64) - 1, 2 * (N - 1));
+                    assert_eq!((r2i_times_cyclo.len() as u64) - 1, 2 * (n - 1));
                 }
 
                 // Calculate r1i = (ct0i - ct0i_hat - r2i * cyclo) / qi mod Z_p. Remainder should be empty.
                 let r1i_num = poly_sub(&ct0i_minus_ct0i_hat, &r2i_times_cyclo);
                 #[cfg(feature = "sanity-check")]
-                assert_eq!((r1i_num.len() as u64) - 1, 2 * (N - 1));
+                assert_eq!((r1i_num.len() as u64) - 1, 2 * (n - 1));
 
                 let (r1i, _r1i_rem) = info_span!("poly_div: r1i_num / qi")
                     .in_scope(|| poly_div(&r1i_num, &[qi_bigint.clone()]));
                 #[cfg(feature = "sanity-check")]
                 {
                     assert!(_r1i_rem.is_empty());
-                    assert_eq!((r1i.len() as u64) - 1, 2 * (N - 1)); // Order(r1i) = 2*(N-1)
+                    assert_eq!((r1i.len() as u64) - 1, 2 * (n - 1)); // Order(r1i) = 2*(N-1)
                     assert_eq!(&r1i_num, &poly_mul(&plan_cyclo, &r1i, &[qi_bigint.clone()]));
                 }
 
@@ -471,32 +434,34 @@ pub fn encrypt_with_witness(
     Ok((ct, wit))
 }
 
-#[test]
-fn test_gen_witness() {
-    let mut rng = StdRng::seed_from_u64(0);
+#[cfg(test)]
+mod test {
+    use bfv::Encoding;
+    use itertools::Itertools;
+    use num_traits::Num;
+    use rand::SeedableRng;
 
-    let params = BfvParameters::new_with_primes(vec![1032193], vec![995329], 40961, 1 << 11);
+    use super::*;
 
-    witness_bounds(&params).unwrap();
+    #[test]
+    fn test_gen_witness() {
+        let mut rng = StdRng::seed_from_u64(0);
 
-    let N: u64 = params.degree as u64;
+        let params = BfvParameters::new_with_primes(vec![1032193], vec![995329], 40961, 1 << 11);
 
-    let sk = SecretKey::random_with_params(&params, &mut StdRng::seed_from_u64(0));
+        witness_bounds(&params).unwrap();
 
-    let m: Vec<_> = (0..(N as u64)).collect_vec(); // m here is from lowest degree to largest as input into fhe.rs (REQUIRED)
-    let pt = Plaintext::encode(
-        &m,
-        &params,
-        Encoding {
-            encoding_type: EncodingType::Poly,
-            poly_cache: PolyCache::None,
-            level: 0,
-        },
-    );
+        let n: u64 = params.degree as u64;
 
-    let (ct, e) = sk.encrypt(&params, &pt, &mut rng);
+        let sk = SecretKey::random_with_params(&params, &mut StdRng::seed_from_u64(0));
 
-    let p = BigInt::from_str_radix("18446744069414584321", 10).unwrap();
+        let m: Vec<_> = (0..n).collect_vec(); // m here is from lowest degree to largest as input into fhe.rs (REQUIRED)
+        let pt = Plaintext::encode(&m, &params, Encoding::default());
 
-    gen_witness(params, ct, e, pt, sk, &p).unwrap();
+        let (ct, e) = sk.encrypt(&params, &pt, &mut rng);
+
+        let p = BigInt::from_str_radix("18446744069414584321", 10).unwrap();
+
+        gen_witness(params, ct, e, pt, sk, &p).unwrap();
+    }
 }

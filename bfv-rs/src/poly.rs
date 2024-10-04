@@ -5,7 +5,6 @@ use num_bigint::BigInt;
 use num_traits::*;
 // use rayon::iter::IntoParallelRefIterator;
 // use rayon::iter::ParallelIterator;
-use tracing::info_span;
 
 // NTT related
 pub(crate) use concrete_ntt::native64::Plan32 as PlanNtt;
@@ -367,16 +366,6 @@ pub fn reduce_and_center_coefficients_mut(coefficients: &mut [BigInt], modulus: 
     coefficients
         .iter_mut()
         .for_each(|x| *x = reduce_and_center(x, modulus, &half_modulus));
-}
-pub fn reduce_and_center_coefficients(
-    coefficients: &mut [BigInt],
-    modulus: &BigInt,
-) -> Vec<BigInt> {
-    let half_modulus = modulus / BigInt::from(2);
-    coefficients
-        .iter()
-        .map(|x| reduce_and_center(x, modulus, &half_modulus))
-        .collect()
 }
 
 /// Reduces a polynomial's coefficients within a polynomial ring defined by a cyclotomic polynomial and a modulus.
