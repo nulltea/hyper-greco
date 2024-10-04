@@ -49,11 +49,11 @@ pub type VerifierKey<
     // >,
 > = LassoPreprocessing<F, E>;
 
-pub type BfvSkEncryptArgs = bfv_rs::InputValidationVectors;
+pub type BfvSkEncryptArgs = bfv_witgen::InputValidationVectors;
 
 pub struct BfvEncryptBlock {
     params: BfvParameters,
-    bounds: bfv_rs::InputValidationBounds,
+    bounds: bfv_witgen::InputValidationBounds,
     num_reps: usize,
 }
 
@@ -289,7 +289,7 @@ pub struct BfvEncrypt {
 impl BfvEncrypt {
     pub fn new(
         params: BfvParameters,
-        bounds: bfv_rs::InputValidationBounds,
+        bounds: bfv_witgen::InputValidationBounds,
         num_reps: usize,
     ) -> Self {
         Self {
@@ -721,7 +721,7 @@ mod test {
             1 << 11,
         );
         let N: u64 = params.degree as u64;
-        let bounds = bfv_rs::witness_bounds(&params).unwrap();
+        let bounds = bfv_witgen::witness_bounds(&params).unwrap();
         let bfv = BfvEncrypt::new(params.clone(), bounds, 1);
 
         let args = {
@@ -732,7 +732,7 @@ mod test {
 
             let p = BigInt::from_u64(18446744069414584321).unwrap();
 
-            bfv_rs::encrypt_with_witness(params, pt, sk, &mut rng, &p)
+            bfv_witgen::encrypt_with_witness(params, pt, sk, &mut rng, &p)
                 .unwrap()
                 .1
         };

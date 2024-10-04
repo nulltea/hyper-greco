@@ -29,7 +29,7 @@ num-traits.workspace = true
 bfv.workspace = true
 
 lasso-gkr = { path = "../lasso" }
-bfv-rs = { path = "../bfv-rs" }
+bfv-witgen = { path = "../bfv-witgen" }
 
 [dev-dependencies]
 paste.workspace = true

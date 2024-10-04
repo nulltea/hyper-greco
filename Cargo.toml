@@ -1,5 +1,5 @@
 [workspace]
-members = ["bfv-gkr", "bfv-rs", "lasso", "web-demo"]
+members = ["bfv-gkr", "bfv-witgen", "lasso", "web-demo"]
 
 [workspace.dependencies]
 rand = "0.8.5"

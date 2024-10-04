@@ -41,7 +41,7 @@ pub fn prove_encrypt_test() {
         40961,
         1 << 11,
     );
-    let bounds = bfv_rs::witness_bounds(&params).unwrap();
+    let bounds = bfv_witgen::witness_bounds(&params).unwrap();
     let bfv = BfvEncrypt::new(params.clone(), bounds, 1);
 
     let args = info_span!("witness_gen").in_scope(|| {
@@ -51,7 +51,7 @@ pub fn prove_encrypt_test() {
         let pt = Plaintext::encode(&m, &params, Encoding::default());
 
         let p = BigInt::from_u64(18446744069414584321).unwrap();
-        bfv_rs::encrypt_with_witness(params, pt, sk, &mut rng, &p)
+        bfv_witgen::encrypt_with_witness(params, pt, sk, &mut rng, &p)
             .unwrap()
             .1
     });
