@@ -5,7 +5,6 @@ use bfv::{
     BfvParameters, Ciphertext, Encoding, EncodingType, Plaintext, PolyCache, PublicKey, SecretKey,
 };
 use concrete_ntt::native64::Plan32;
-use fhe_traits::*;
 use itertools::{izip, Itertools};
 use num_bigint::{BigInt, BigUint};
 use num_traits::{FromPrimitive, Num, One, Signed, ToPrimitive, Zero};

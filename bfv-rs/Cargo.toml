@@ -9,9 +9,6 @@ crate-type = ["cdylib", "rlib"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-fhe = { git = "https://github.com/gnosisguild/fhe.rs.git", branch = "feature/greco-integration" }
-fhe-traits = { git = "https://github.com/gnosisguild/fhe.rs.git", branch = "feature/greco-integration" }
-fhe-math = { git = "https://github.com/gnosisguild/fhe.rs.git", branch = "feature/greco-integration" }
 serde_json = "1.0"
 rand = "0.8"
 getrandom = { version = "0.2", features = ["js"] }
