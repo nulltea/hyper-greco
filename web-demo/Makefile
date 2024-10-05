@@ -1,5 +1,5 @@
 build_web:
-	wasm-pack build --release --target=web
+	RUSTFLAGS='-C target-feature=+atomics,+bulk-memory,+mutable-globals' rustup run nightly-2024-09-06 wasm-pack build --target web -- -Z build-std=panic_abort,std;
 	find pkg/snippets -type f -iname workerHelpers.worker.js -exec sed -i "s|from '..\/..\/..\/';|from '..\/..\/..\/web_demo.js';|" {} \;
 
 run_web:

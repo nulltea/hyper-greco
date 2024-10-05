@@ -7,7 +7,7 @@ serde = { version = "=1.0", default-features = false, features = ["derive"] }
 serde_json = { version = "1.0", default-features = false, features = ["std"] }
 itertools = "0.11"
 prettytable = "0.10.0"
-gkr = { git = "https://github.com/han0110/gkr" }
+gkr = { git = "https://github.com/nulltea/gkr-lasso" }
 rayon = "1.8.0"
 digest = "0.10.1"
 typenum = "1.12.0"
@@ -21,13 +21,15 @@ enum_dispatch = "0.3.12"
 ark-std = { version = "0.4.0" }
 fixedbitset = "0.5"
 paste = "1.0"
-wasm-bindgen = "0.2.93"
-num-bigint = "0.4.6"
+wasm-bindgen = "0.2.90"
+num-bigint = "0.4"
 num-traits = "0.2"
 bfv = { git = "https://github.com/Janmajayamall/bfv.git", features = [
     "serialize",
     "std",
 ], branch = "wasm" }
+traits = { git = "https://github.com/Janmajayamall/bfv.git", branch = "wasm" }
+
 
 # Dev dependencies
 serial_test = "3.1"
@@ -66,10 +68,6 @@ lto = "fat"
 # codegen-units = 1
 panic = "abort"
 incremental = false
-
-[patch."https://github.com/han0110/gkr"]
-gkr = { git = "https://github.com/nulltea/gkr-lasso" }
-# gkr = { path = "../examples/gkr/gkr" }
 
 [patch."https://github.com/han0110/goldilocks"]
 goldilocks = { git = "https://github.com/nulltea/goldilocks", branch = "wasm" }

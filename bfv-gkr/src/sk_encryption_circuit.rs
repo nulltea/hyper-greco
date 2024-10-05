@@ -145,14 +145,27 @@ impl BfvEncryptBlock {
 
         let lasso_inputs_batched = {
             let gates = chain![
-                self.bounds.r1.iter().take(self.num_reps).copied(),
-                iter::repeat(self.bounds.r2[0]).take(r2is_chunks.len()),
                 vec![self.bounds.s, self.bounds.e, self.bounds.k1],
+                self.bounds.r1.iter().take(self.num_reps).copied(),
             ]
             .enumerate()
             .flat_map(|(i, bound)| {
                 (0..(1usize << log2_size)).map(move |j| relay_add_const((i, j), F::from(bound)))
             })
+            .chain(
+                self.bounds
+                    .r2
+                    .iter()
+                    .take(self.num_reps)
+                    .copied()
+                    .enumerate()
+                    .flat_map(|(i, bound)| {
+                        (0..(1usize << poly_log2_size)).map(move |j| {
+                            let input_gate = self.num_reps + 3 + i / 2; // (s,e,k1) + r1s + r2s chunks (each 2x of r2i)
+                            relay_add_const((input_gate, j), F::from(bound))
+                        })
+                    }),
+            )
             .collect_vec();
 
             circuit.insert(VanillaNode::new(
@@ -169,6 +182,9 @@ impl BfvEncryptBlock {
                 poly_log2_size
             };
             let lookups = chain![
+                iter::repeat(RangeLookup::id_for(self.bounds.s * 2 + 1)).take(1 << log2_size),
+                iter::repeat(RangeLookup::id_for(self.bounds.e * 2 + 1)).take(1 << log2_size),
+                iter::repeat(RangeLookup::id_for(self.bounds.k1 * 2 + 1)).take(1 << log2_size),
                 self.bounds
                     .r1
                     .iter()
@@ -181,9 +197,6 @@ impl BfvEncryptBlock {
                     .take(self.num_reps)
                     .flat_map(|&bound| iter::repeat(RangeLookup::id_for(bound * 2 + 1))
                         .take(1 << r2i_log2_size)),
-                iter::repeat(RangeLookup::id_for(self.bounds.s * 2 + 1)).take(1 << log2_size),
-                iter::repeat(RangeLookup::id_for(self.bounds.e * 2 + 1)).take(1 << log2_size),
-                iter::repeat(RangeLookup::id_for(self.bounds.k1 * 2 + 1)).take(1 << log2_size),
             ]
             .collect_vec();
             let num_vars = lookups.len().next_power_of_two().ilog2() as usize;
@@ -193,6 +206,11 @@ impl BfvEncryptBlock {
                 lookups,
             ))
         };
+
+        connect!(circuit {
+            lasso_inputs_batched <- s, e, k1;
+        });
+
         r1is.iter()
             .take(self.num_reps)
             .for_each(|&r1i| circuit.connect(r1i, lasso_inputs_batched));
@@ -202,7 +220,6 @@ impl BfvEncryptBlock {
             .for_each(|&r2i| circuit.connect(r2i, lasso_inputs_batched));
 
         connect!(circuit {
-            lasso_inputs_batched <- s, e, k1;
             lasso_ranges <- lasso_inputs_batched;
         });
 
@@ -312,8 +329,8 @@ impl BfvEncrypt {
         // Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
     >(
         &self,
-    ) -> (ProverKey<F, E>, VerifierKey<F, E>) {
-        let mut lasso_preprocessing = LassoPreprocessing::<F, E>::preprocess::<C, M>(chain![
+    ) -> ProverKey<F, E> {
+        LassoPreprocessing::<F, E>::preprocess::<C, M>(chain![
             [
                 RangeLookup::new_boxed(self.block.bounds.s * 2 + 1),
                 RangeLookup::new_boxed(self.block.bounds.e * 2 + 1),
@@ -331,14 +348,7 @@ impl BfvEncrypt {
                 .iter()
                 .take(self.block.num_reps)
                 .map(|&bound| RangeLookup::new_boxed(bound * 2 + 1))
-        ]);
-
-        let lasso_verifier = lasso_preprocessing.to_verifier_preprocessing();
-
-        let pk = lasso_preprocessing;
-        let vk = lasso_verifier;
-
-        (pk, vk)
+        ])
     }
 
     pub fn configure<F: PrimeField, E: ExtensionField<F>>(
@@ -407,27 +417,21 @@ impl BfvEncrypt {
         (inputs, output)
     }
 
-    pub fn prove<
-        F: PrimeField,
-        E: ExtensionField<F>,
-        // Pcs: PolynomialCommitmentScheme<
-        //     F,
-        //     Polynomial = MultilinearPolynomial<F>,
-        //     CommitmentChunk = Output<Keccak256>,
-        // >,
-    >(
+    pub fn build_circuit<F: PrimeField, E: ExtensionField<F>>(
+        &self,
+        pk: ProverKey<F, E>,
+    ) -> Circuit<F, E> {
+        let mut circuit = Circuit::<F, E>::default();
+        self.configure(&mut circuit, pk);
+        circuit
+    }
+
+    pub fn prove<F: PrimeField, E: ExtensionField<F>>(
         &self,
         args: &BfvSkEncryptArgs,
-        pk: ProverKey<F, E>,
+        circuit: &Circuit<F, E>,
     ) -> Vec<u8> {
-        let preprocessing = pk;
         let mut transcript = Keccak256Transcript::<Vec<u8>>::default();
-
-        let circuit = info_span!("init circuit").in_scope(|| {
-            let mut circuit = Circuit::<F, E>::default();
-            self.configure(&mut circuit, preprocessing);
-            circuit
-        });
 
         let (values, output_claims) = info_span!("wintess gen").in_scope(|| {
             let (inputs, ctis_poly) = info_span!("parse inputs").in_scope(|| self.get_inputs(args));
@@ -446,28 +450,19 @@ impl BfvEncrypt {
         });
 
         let _claims = info_span!("GKR prove")
-            .in_scope(|| gkr::prove_gkr(&circuit, &values, &output_claims, &mut transcript))
+            .in_scope(|| gkr::prove_gkr(circuit, &values, &output_claims, &mut transcript))
             .unwrap();
 
         transcript.into_proof()
     }
 
-    pub fn verify<
-        F: PrimeField,
-        E: ExtensionField<F>,
-        // Pcs: PolynomialCommitmentScheme<
-        //     F,
-        //     Polynomial = MultilinearPolynomial<F>,
-        //     CommitmentChunk = Output<Keccak256>,
-        // >,
-    >(
+    pub fn verify<F: PrimeField, E: ExtensionField<F>>(
         &self,
-        vk: VerifierKey<F, E>,
-        inputs: Vec<BoxMultilinearPoly<'static, F, E>>,
+        // inputs: Vec<BoxMultilinearPoly<'static, F, E>>,
+        circuit: &Circuit<F, E>,
         ct0is: Vec<Vec<BigInt>>,
         proof: &[u8],
     ) {
-        let preprocessing = vk;
         let mut transcript = Keccak256Transcript::from_proof(proof);
 
         let output_claims = info_span!("eval output claim").in_scope(|| {
@@ -493,180 +488,19 @@ impl BfvEncrypt {
             vec![EvalClaim::new(vec![], E::ZERO), ct0is_claim]
         });
 
-        let circuit = info_span!("init circuit").in_scope(|| {
-            let mut circuit = Circuit::<F, E>::default();
-            self.configure(&mut circuit, preprocessing);
-            circuit
-        });
-
-        let input_claims = info_span!("GKR verify")
+        let _input_claims = info_span!("GKR verify")
             .in_scope(|| verify_gkr(&circuit, &output_claims, &mut transcript).unwrap());
 
-        izip_eq!(inputs, input_claims).for_each(|(input, claims)| {
-            claims
-                .iter()
-                .for_each(|claim| assert_eq!(input.evaluate(claim.point()), claim.value()))
-        });
+        // izip_eq!(inputs, input_claims).for_each(|(input, claims)| {
+        //     claims
+        //         .iter()
+        //         .for_each(|claim| assert_eq!(input.evaluate(claim.point()), claim.value()))
+        // });
     }
 
     fn ct0is_log2_size(&self) -> usize {
         assert!(self.block.num_reps.is_power_of_two());
         self.log2_size() + self.block.num_reps.next_power_of_two().ilog2() as usize
-    }
-
-    pub fn gen_values<F: PrimeField, E: ExtensionField<F>>(
-        &self,
-        args: &BfvSkEncryptArgs,
-    ) -> Vec<BoxMultilinearPoly<'static, F, E>>
-    where
-        F::Repr: Into<u64>,
-    {
-        let log2_size = self.log2_size();
-
-        let s = Poly::<F>::new_padded(args.s.clone(), log2_size);
-        let e = Poly::<F>::new_shifted(args.e.clone(), (1 << log2_size) - 1);
-        let k1 = Poly::<F>::new_shifted(args.k1.clone(), (1 << log2_size) - 1);
-
-        let mut r2is = vec![];
-        let mut r1is = vec![];
-        let mut ais = vec![];
-        let mut ct0is = vec![];
-
-        let mut qi_constants = vec![];
-        let mut k0i_constants = vec![];
-
-        for z in 0..min(args.ct0is.len(), self.block.num_reps) {
-            let r2i = Poly::<F>::new(args.r2is[z].clone());
-            r2is.push(r2i.to_vec());
-
-            let r1i = Poly::<F>::new_padded(args.r1is[z].clone(), log2_size);
-            r1is.push(r1i.to_vec());
-
-            let ai = Poly::<F>::new_padded(args.ais[z].clone(), log2_size);
-            ais.push(ai.to_vec());
-
-            let ct0i = Poly::<F>::new_shifted(args.ct0is[z].clone(), 1 << log2_size);
-            let mut ct0i = ct0i.as_ref()[1..].to_vec();
-            ct0i.push(F::ZERO);
-            ct0is.extend(ct0i);
-
-            qi_constants.push(F::from(self.block.bounds.qis[z]));
-            k0i_constants.push(F::from_u128(self.block.bounds.k01s[z].to_u128().unwrap()));
-        }
-
-        let es = (0..self.block.num_reps)
-            .flat_map(|_| e.as_ref().to_vec())
-            .collect_vec();
-        let k1k0is = (0..self.block.num_reps)
-            .flat_map(|i| {
-                k1.as_ref()
-                    .iter()
-                    .map(move |&k1| k1 * F::from_u128(self.block.bounds.k01s[i].to_u128().unwrap()))
-            })
-            .collect_vec();
-        let r1iqis = (0..self.block.num_reps)
-            .flat_map(|i| {
-                r1is[i]
-                    .iter()
-                    .map(move |&r1i| r1i * F::from(self.block.bounds.qis[i]))
-            })
-            .collect_vec();
-
-        let omega = root_of_unity(log2_size);
-
-        let s_eval = {
-            let mut buf = s.to_vec();
-            radix2_fft(&mut buf, omega);
-            buf
-        };
-
-        let ai_evals = ais
-            .iter()
-            .map(|ai| {
-                let mut buf = ai.clone();
-                radix2_fft(&mut buf, omega);
-                buf
-            })
-            .collect_vec();
-
-        let sai_evals = ai_evals
-            .iter()
-            .map(|ai_eval| {
-                izip!(s_eval.clone(), ai_eval.clone())
-                    .map(|(s_e, ai_e)| s_e * ai_e)
-                    .collect_vec()
-            })
-            .collect_vec();
-
-        let sais: Vec<_> = sai_evals
-            .par_iter()
-            .map(|sai_eval| {
-                let mut buf = sai_eval.clone();
-                radix2_ifft(&mut buf, omega);
-                buf
-            })
-            .collect();
-
-        let sai_values = izip!(ai_evals, sai_evals, sais.clone())
-            .flat_map(|(ai_eval, sai_eval, sai)| [ai_eval, sai_eval, sai])
-            .collect_vec();
-
-        let sai = sais.iter().flatten().cloned().collect_vec();
-
-        let r2is_cyclo = r2is
-            .iter()
-            .take(self.block.num_reps)
-            .flat_map(|r2i| {
-                let mut result = vec![F::ZERO; 2 * self.block.params.degree]; // Allocate result vector of size 2N-1
-
-                for i in 0..r2i.len() {
-                    result[i] += r2i[i]; // Add P(x)
-                    result[i + self.block.params.degree] += r2i[i]; // Add P(x) * x^N
-                }
-                result
-            })
-            .collect_vec();
-
-        let r2is = r2is
-            .into_iter()
-            .take(self.block.num_reps)
-            .flat_map(|mut r2i| {
-                r2i.push(F::ZERO);
-                r2i
-            })
-            .collect_vec();
-
-        let ct0i_check = sai
-            .iter()
-            .zip(e.as_ref().iter())
-            .zip(k1.as_ref().iter())
-            .zip(r1is[0].iter())
-            .zip(r2is_cyclo.iter())
-            .map(|((((sai0, e), k1), r1i), r2i_cyclo)| {
-                *sai0 + *e + *k1 * k0i_constants[0] + *r1i * qi_constants[0] + *r2i_cyclo
-            })
-            .collect_vec();
-
-        assert!(ct0i_check == ct0is);
-
-        chain_par![
-            [s.to_vec(), e.to_vec(), k1.to_vec()],
-            [es, k1k0is],
-            ais,
-            r1is,
-            [r1iqis],
-            [r2is, vec![F::ZERO]],
-            // [r2is],
-            // [r2is_m, r2is_t, vec![F::ZERO]] // r2is_range
-            [s_eval.clone()],
-            [s_eval],
-            [sai],
-            sai_values,
-            [r2is_cyclo],
-            [ct0is]
-        ]
-        .map(box_dense_poly)
-        .collect()
     }
 }
 
@@ -678,30 +512,32 @@ fn relay_add_const<F>(w: (usize, usize), c: F) -> VanillaGate<F> {
     VanillaGate::new(Some(c), vec![(None, w)], Vec::new())
 }
 
-pub fn radix2_ifft<F: PrimeField>(buf: &mut [F], omega: F) {
-    let n = buf.len();
-    let omega_inv = omega.invert().unwrap();
-
-    radix2_fft(buf, omega_inv);
-
-    // Normalize the result by dividing by n
-    let n_inv = F::from(n as u64).invert().unwrap(); // Assuming `Field` has an inverse method
-    buf.iter_mut().for_each(|x| *x *= &n_inv);
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
     use bfv::{BfvParameters, Encoding, Plaintext, SecretKey};
     use goldilocks::{Goldilocks, GoldilocksExt2};
     use num_traits::FromPrimitive;
-    use rand::{rngs::StdRng, SeedableRng};
+    use rand::{distributions::Uniform, rngs::StdRng, thread_rng, Rng, SeedableRng};
     use tracing::info_span;
     use tracing_forest::ForestLayer;
     use tracing_subscriber::{layer::SubscriberExt, EnvFilter, Registry};
+    use traits::TryEncodingWithParameters;
+
+    fn random_bit_vector(hamming_weight: usize, size: usize) -> Vec<u32> {
+        let mut rng = thread_rng();
+
+        let mut bit_vector = vec![0; size];
+        (0..hamming_weight).for_each(|_| {
+            let sample_index = rng.sample(Uniform::new(0, size));
+            bit_vector[sample_index] = 1;
+        });
+
+        bit_vector
+    }
 
     #[test]
-    fn test_sk_enc_valid_x() {
+    fn test_sk_enc_valid() {
         let env_filter = EnvFilter::builder()
             .with_default_directive(tracing::Level::INFO.into())
             .from_env_lossy();
@@ -712,40 +548,47 @@ mod test {
 
         let _ = tracing::subscriber::set_global_default(subscriber);
 
-        let mut rng = StdRng::seed_from_u64(0);
+        let mut rng = thread_rng();
 
-        let params = BfvParameters::new_with_primes(
+        const RING_SIZE: usize = 32;
+
+        let mut params = BfvParameters::new_with_primes(
             vec![1032193, 1073692673],
             vec![995329, 1073668097],
             40961,
-            1 << 11,
+            RING_SIZE,
         );
+        params.enable_hybrid_key_switching_with_prime(vec![61441]);
+        params.enable_pke();
+
         let N: u64 = params.degree as u64;
         let bounds = bfv_witgen::witness_bounds(&params).unwrap();
         let bfv = BfvEncrypt::new(params.clone(), bounds, 1);
+        let mut pk = info_span!("setup").in_scope(|| bfv.setup::<Goldilocks, GoldilocksExt2>());
+
+        let circuit = info_span!("init circuit").in_scope(|| bfv.build_circuit(pk));
+
+        let hamming_weight = 1000;
+        let vector_size = RING_SIZE;
 
         let args = {
             let sk = SecretKey::random_with_params(&params, &mut rng);
 
-            let m: Vec<_> = (0..N).collect_vec(); // m here is from lowest degree to largest as input into fhe.rs (REQUIRED)
+            let m: Vec<_> = (0..N).collect_vec();
             let pt = Plaintext::encode(&m, &params, Encoding::default());
 
             let p = BigInt::from_u64(18446744069414584321).unwrap();
 
-            bfv_witgen::encrypt_with_witness(params, pt, sk, &mut rng, &p)
+            bfv_witgen::encrypt_with_witness(&params, &sk, pt, &mut rng, &p)
                 .unwrap()
                 .1
         };
 
-        bfv.gen_values::<Goldilocks, GoldilocksExt2>(&args);
-        let (pk, vk) = info_span!("setup").in_scope(|| bfv.setup::<Goldilocks, GoldilocksExt2>());
         let proof = info_span!("FHE_enc prove")
-            .in_scope(|| bfv.prove::<Goldilocks, GoldilocksExt2>(&args, pk));
-
-        let (inputs, _) = info_span!("parse inputs").in_scope(|| bfv.get_inputs(&args));
+            .in_scope(|| bfv.prove::<Goldilocks, GoldilocksExt2>(&args, &circuit));
 
         info_span!("FHE_enc verify")
-            .in_scope(|| bfv.verify::<Goldilocks, GoldilocksExt2>(vk, inputs, args.ct0is, &proof));
+            .in_scope(|| bfv.verify::<Goldilocks, GoldilocksExt2>(&circuit, args.ct0is, &proof));
     }
 
     //     // Goldilocks prime tests

@@ -155,7 +155,7 @@ pub fn poly_div(dividend: &[BigInt], divisor: &[BigInt]) -> (Vec<BigInt>, Vec<Bi
     }
 
     // Threshold for switching to standard division
-    if n - m < 32 {
+    if n - m < 128 || n - m > 500 { // n - m > 500 to avoid stack overflow TODO: better fix?
         return poly_div_schoolbook(dividend, divisor);
     }
 

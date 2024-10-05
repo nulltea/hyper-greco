@@ -2,10 +2,12 @@ mod poly;
 
 use bfv::{BfvParameters, Ciphertext, Plaintext, SecretKey};
 use bfv::{Modulus, Poly, Representation};
-use itertools::izip;
+use itertools::{izip, Itertools};
 use num_bigint::{BigInt, BigUint};
 use num_traits::{FromPrimitive, One, Signed, ToPrimitive, Zero};
 use rand::rngs::StdRng;
+use rand::{CryptoRng, RngCore};
+use rayon::iter::{ParallelBridge, ParallelIterator};
 use std::vec;
 use tracing::info_span;
 
@@ -238,7 +240,7 @@ impl InputValidationVectors {
 
         let plan = PlanNtt::try_new(n as usize * 2).unwrap();
         #[cfg(feature = "sanity-check")]
-        let plan_cyclo = PlanNtt::try_new(N as usize * 4).unwrap();
+        let plan_cyclo = PlanNtt::try_new(n as usize * 4).unwrap();
 
         // Perform the main computation logic
         #[allow(clippy::type_complexity)]
@@ -256,7 +258,6 @@ impl InputValidationVectors {
             ct1.coefficients().rows(),
         )
         .enumerate()
-        .take(1)
         // .par_bridge()
         .map(|(i, (qi, ct0_coeffs, ct1_coeffs))| {
             // --------------------------------------------------- ct0i ---------------------------------------------------
@@ -287,7 +288,7 @@ impl InputValidationVectors {
                     let sai = poly_mul(&plan, &ai, &s);
 
                     #[cfg(feature = "sanity-check")]
-                    assert_eq!((pk0i_times_u.len() as u64) - 1, 2 * (n - 1));
+                    assert_eq!((sai.len() as u64) - 1, 2 * (n - 1));
 
                     let e_plus_ki = poly_add(&e, &ki);
 
@@ -307,7 +308,9 @@ impl InputValidationVectors {
                 });
 
                 #[cfg(feature = "sanity-check")]
+                assert_eq!(&ct0i[1886-2], &ct0i_hat_mod_rqi[1886-2]);
                 assert_eq!(&ct0i, &ct0i_hat_mod_rqi);
+
 
                 // Compute r2i numerator = ct0i - ct0i_hat and reduce/center the polynomial
                 let ct0i_minus_ct0i_hat = poly_sub(&ct0i, &ct0i_hat);
@@ -332,6 +335,7 @@ impl InputValidationVectors {
                 // Assert that (ct0i - ct0i_hat) = (r2i * cyclo) mod Z_qi
                 let r2i_times_cyclo =
                     info_span!("poly_mul: r2i * cyclo").in_scope(|| poly_mul(&plan, &r2i, &cyclo));
+
                 let mut r2i_times_cyclo_mod_zqi = r2i_times_cyclo.clone();
                 reduce_and_center_coefficients_mut(&mut r2i_times_cyclo_mod_zqi, &qi_bigint);
                 #[cfg(feature = "sanity-check")]
@@ -417,21 +421,41 @@ pub fn gen_witness(
     Ok(reduced_p)
 }
 
-pub fn encrypt_with_witness(
-    params: BfvParameters,
+pub fn encrypt_with_witness<R: CryptoRng + RngCore>(
+    params: &BfvParameters,
+    sk: &SecretKey,
     pt: Plaintext,
-    sk: SecretKey,
-    rng: &mut StdRng,
+    rng: &mut R,
     p: &BigInt,
 ) -> Result<(Ciphertext, InputValidationVectors), Box<dyn std::error::Error>> {
-    let (ct, e) = info_span!("bfv::encrypt_sk").in_scope(|| sk.encrypt(&params, &pt, rng));
+    let (ct, e) = info_span!("bfv::encrypt_sk").in_scope(|| sk.encrypt(params, &pt, rng));
 
     let res = info_span!("witness preprocess")
-        .in_scope(|| InputValidationVectors::compute(&params, &pt, &e, &ct, &sk))?;
+        .in_scope(|| InputValidationVectors::compute(params, &pt, &e, &ct, sk))?;
 
     let wit = info_span!("reduce mod p").in_scope(|| res.standard_form(p));
 
     Ok((ct, wit))
+}
+
+pub fn ct0_witness(params: &BfvParameters, ct: &Ciphertext, p: &BigInt) -> Vec<Vec<BigInt>> {
+    let ctx = params.poly_ctx(&bfv::PolyType::Q, ct.level());
+
+    let mut ct0 = ct.c_ref()[0].clone();
+    ctx.change_representation(&mut ct0, Representation::Coefficient);
+    izip!(ct0.coefficients().rows(), ctx.moduli_ops())
+        .into_iter()
+        .map(|(ct0_coeffs, qi)| {
+            let mut ct0i = ct0_coeffs
+                .iter()
+                .rev()
+                .map(|&x| BigInt::from(x))
+                .collect_vec();
+            reduce_and_center_coefficients_mut(&mut ct0i, &BigInt::from(qi.modulus()));
+
+            reduce_coefficients(&ct0i, p)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -440,14 +464,31 @@ mod test {
     use itertools::Itertools;
     use num_traits::Num;
     use rand::SeedableRng;
+    use tracing_forest::ForestLayer;
+    use tracing_subscriber::{layer::SubscriberExt, EnvFilter, Registry};
 
     use super::*;
 
     #[test]
     fn test_gen_witness() {
+        let env_filter = EnvFilter::builder()
+            .with_default_directive(tracing::Level::INFO.into())
+            .from_env_lossy();
+
+        let subscriber = Registry::default()
+            .with(env_filter)
+            .with(ForestLayer::default());
+
+        let _ = tracing::subscriber::set_global_default(subscriber);
+
         let mut rng = StdRng::seed_from_u64(0);
 
-        let params = BfvParameters::new_with_primes(vec![1032193], vec![995329], 40961, 1 << 11);
+        let params = BfvParameters::new_with_primes(
+            vec![1032193, 1073692673],
+            vec![995329, 1073668097],
+            40961,
+            1 << 11,
+        );
 
         witness_bounds(&params).unwrap();
 

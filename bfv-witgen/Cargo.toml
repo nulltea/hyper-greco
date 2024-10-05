@@ -13,23 +13,20 @@ serde_json = "1.0"
 rand = "0.8"
 getrandom = { version = "0.2", features = ["js"] }
 serde = { version = "1.0", features = ["derive"] }
-num-bigint = "0.4.6"
-num-traits = "0.2"
+num-bigint.workspace = true
+num-traits.workspace = true
 ndarray = { version = "0.15.6", features = ["rayon"] }
 itertools = "0.13.0"
 rayon = "1.10.0"
-tracing = "0.1.40"
-tracing-subscriber = { version = "0.3.17", features = ["std", "env-filter"] }
-tracing-forest = { version = "0.1.6", features = ["ansi", "smallvec"] }
 concrete-ntt = { git = "https://github.com/zama-ai/concrete-ntt", features = [
     "nightly",
 ] }
+bfv.workspace = true
+traits.workspace = true
 
-bfv = { git = "https://github.com/Janmajayamall/bfv.git", features = [
-    "serialize",
-    "std",
-], branch = "wasm" }
-traits = { git = "https://github.com/Janmajayamall/bfv.git", branch = "wasm" }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-forest.workspace = true
 
 [features]
 sanity-check = []

@@ -42,7 +42,7 @@ pub fn prove_encrypt_test() {
         1 << 11,
     );
     let bounds = bfv_witgen::witness_bounds(&params).unwrap();
-    let bfv = BfvEncrypt::new(params.clone(), bounds, 1);
+    let bfv = BfvEncrypt::new(params.clone(), bounds, 2);
 
     let args = info_span!("witness_gen").in_scope(|| {
         let sk = SecretKey::random_with_params(&params, &mut rng);
@@ -51,19 +51,21 @@ pub fn prove_encrypt_test() {
         let pt = Plaintext::encode(&m, &params, Encoding::default());
 
         let p = BigInt::from_u64(18446744069414584321).unwrap();
-        bfv_witgen::encrypt_with_witness(params, pt, sk, &mut rng, &p)
+        bfv_witgen::encrypt_with_witness(&params, &sk, pt, &mut rng, &p)
             .unwrap()
             .1
     });
 
     let (pk, vk) = info_span!("setup").in_scope(|| bfv.setup::<Goldilocks, GoldilocksExt2>());
-    let proof =
-        info_span!("FHE_enc prove").in_scope(|| bfv.prove::<Goldilocks, GoldilocksExt2>(&args, pk));
+    let circuit = info_span!("init circuit").in_scope(|| bfv.build_circuit(pk));
 
-    let (inputs, _) = info_span!("parse inputs").in_scope(|| bfv.get_inputs(&args));
+    let proof =
+        info_span!("FHE_enc prove").in_scope(|| bfv.prove::<Goldilocks, GoldilocksExt2>(&args, &circuit));
+
+    // let (inputs, _) = info_span!("parse inputs").in_scope(|| bfv.get_inputs(&args));
 
     info_span!("FHE_enc verify")
-        .in_scope(|| bfv.verify::<Goldilocks, GoldilocksExt2>(vk, inputs, args.ct0is, &proof));
+        .in_scope(|| bfv.verify::<Goldilocks, GoldilocksExt2>(vk, args.ct0is, &proof));
 }
 
 use tracing::level_filters::LevelFilter;
@@ -87,4 +89,10 @@ fn setup() {
         .with(forest_layer)
         .init();
     tracing::info!("init!");
+}
+
+#[test]
+fn prove_encrypt_test_native() {
+    setup();
+    prove_encrypt_test();
 }

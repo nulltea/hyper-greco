@@ -27,6 +27,7 @@ wasm-bindgen.workspace = true
 num-bigint.workspace = true
 num-traits.workspace = true
 bfv.workspace = true
+traits.workspace = true
 
 lasso-gkr = { path = "../lasso" }
 bfv-witgen = { path = "../bfv-witgen" }
